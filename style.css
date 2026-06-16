@@ -776,6 +776,18 @@ input, select, textarea { font: inherit; color: inherit; }
 .footer__cols h4 { font-size: 0.9rem; font-weight: 700; margin-bottom: 14px; }
 .footer__cols a { display: block; padding: 6px 0; color: var(--muted); font-size: 0.9rem; }
 .footer__cols a:hover { color: var(--text); }
+.footer__disclaimer {
+  margin-top: 28px;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--warning) 8%, var(--bg-alt));
+  border: 1px solid color-mix(in oklab, var(--warning) 28%, var(--border));
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.65;
+}
+.footer__disclaimer strong { color: var(--text); }
+.footer__disclaimer em { font-style: normal; color: var(--text); font-weight: 600; }
 .footer__bottom {
   display: flex; justify-content: space-between; align-items: center;
   padding-top: 24px;
