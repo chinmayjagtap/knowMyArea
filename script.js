@@ -125,17 +125,52 @@ const reverseGeocode = async (lat, lng) => {
   };
 };
 
-// ---- RTI Wiki · Lok Sabha MP directory (CORS-open static JSON) ----
-// Live snapshot of all 540 current Lok Sabha members, sourced upstream from
-// the official sansad.in NIC API and refreshed every few weeks by RTI Wiki.
-// We lazy-fetch this once after GPS is granted, then fuzzy-match the user's
-// state + district / city to a constituency. If we find exactly one match
-// we render a rich card; otherwise we fall back to a verify-link card so we
-// never lie about who their MP is.
+// ---- Local MP directories (Lok Sabha + Rajya Sabha CSVs) ----
+// Open data published by RTI Wiki (CC-BY 4.0) and shipped with the static
+// site under /data/. Source pipeline (per RTI Wiki):
+//   • Lok Sabha   — sansad.in/api_ls/member (NIC)
+//   • Rajya Sabha — rsdoc.nic.in/MemberGetData/getmemberall (NIC)
+//   • Wikipedia REST for neutral bios + photos
+// We lazy-load both CSVs once, then:
+//   • findLSMember(loc) → fuzzy-match user's city/district to a constituency.
+//   • findRSMembers(loc) → list every Rajya Sabha member sitting from the user's state.
+//   • findBySlug(house, slug) → resolve a `?house=&mp=` permalink.
 const MP_DATA = (() => {
-  const URL = 'https://righttoinformation.wiki/static/data/ls-mps.json';
+  const LS_URL = 'data/lok-sabha-members.csv';
+  const RS_URL = 'data/rajya-sabha-members.csv';
+  const PHOTO_BASE = 'https://righttoinformation.wiki';
   let cache = null;
   let inflight = null;
+
+  // RFC-4180-ish CSV parser. Handles quoted fields, escaped quotes (""),
+  // embedded commas and newlines. Skips blank lines.
+  const parseCSV = (text) => {
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else { inQuotes = false; }
+        } else { field += c; }
+      } else if (c === '"') {
+        inQuotes = true;
+      } else if (c === ',') {
+        row.push(field); field = '';
+      } else if (c === '\n') {
+        row.push(field); rows.push(row); row = []; field = '';
+      } else if (c !== '\r') {
+        field += c;
+      }
+    }
+    if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+    if (!rows.length) return [];
+    const headers = rows[0].map(h => h.trim());
+    return rows.slice(1)
+      .filter(r => r.length === headers.length && r.some(v => v !== ''))
+      .map(r => Object.fromEntries(headers.map((h, i) => [h, r[i]])));
+  };
 
   // Normalise text for fuzzy matching: lowercase, ASCII-fold, strip punctuation.
   const norm = (s) => String(s || '')
@@ -145,14 +180,32 @@ const MP_DATA = (() => {
     .trim();
 
   // De-obfuscate emails like  foo[at]gmail[dot]com  →  foo@gmail.com
-  const cleanEmail = (s) => String(s || '').replace(/\[at\]/gi, '@').replace(/\[dot\]/gi, '.').split(',')[0].trim();
+  const cleanEmail = (s) => {
+    if (!s) return '';
+    return String(s).split(',')[0].trim()
+      .replace(/\[at\]/gi, '@')
+      .replace(/\[dot\]/gi, '.');
+  };
 
-  // Some Nominatim states need mapping to RTI-Wiki's spelling.
+  // Phone fields arrive as either a stringified Python list (`['9876543210 (M)']`)
+  // or an Excel-style float (`9849024693.0`). Pull the first sensible digit run.
+  const cleanPhone = (s) => {
+    if (!s) return '';
+    let v = String(s).replace(/[\[\]']/g, '').split(',')[0].trim();
+    v = v.replace(/\.0$/, '');
+    return v;
+  };
+
+  const slugFromPermalink = (p) => {
+    if (!p) return '';
+    const m = String(p).match(/mp=([^&]+)/);
+    return m ? m[1] : '';
+  };
+
+  // Some Nominatim states need mapping to the CSV spelling.
   const STATE_ALIASES = {
     'delhi': 'NCT of Delhi',
     'national capital territory of delhi': 'NCT of Delhi',
-    'jammu and kashmir': 'Jammu and Kashmir',
-    'odisha': 'Odisha',
     'orissa': 'Odisha',
     'andaman and nicobar': 'Andaman and Nicobar Islands',
     'dadra and nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu',
@@ -163,32 +216,34 @@ const MP_DATA = (() => {
   const load = () => {
     if (cache) return Promise.resolve(cache);
     if (inflight) return inflight;
-    inflight = fetch(URL, { headers: { 'Accept': 'application/json' } })
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(json => { cache = json; return json; })
-      .catch(err => { inflight = null; throw err; });
+    inflight = Promise.all([
+      fetch(LS_URL).then(r => r.ok ? r.text() : Promise.reject(new Error('LS CSV ' + r.status))),
+      fetch(RS_URL).then(r => r.ok ? r.text() : Promise.reject(new Error('RS CSV ' + r.status))),
+    ]).then(([lsText, rsText]) => {
+      const ls = parseCSV(lsText).map(m => ({ ...m, _house: 'ls', _slug: slugFromPermalink(m.permalink) }));
+      const rs = parseCSV(rsText).map(m => ({ ...m, _house: 'rs', _slug: slugFromPermalink(m.permalink) }));
+      cache = { ls, rs };
+      return cache;
+    }).catch(err => { inflight = null; throw err; });
     return inflight;
   };
 
-  // Given a Nominatim `loc`, return { member, confidence } or null.
-  // confidence ∈ { 'confident' (1 match), 'best-guess' (>1 matches) }.
-  const findMP = async (loc) => {
+  // Match user's location to a Lok Sabha constituency.
+  // Returns { member, confidence: 'confident' | 'best-guess' } or null.
+  const findLSMember = async (loc) => {
     if (!loc) return null;
     let data;
     try { data = await load(); } catch (e) { return null; }
 
-    const targetState = canonState(loc.state);
-    const inState = data.members.filter(m => m.state === targetState);
-    if (inState.length === 0) return null;
+    const targetState = norm(canonState(loc.state));
+    const inState = data.ls.filter(m => norm(m.state) === targetState);
+    if (!inState.length) return null;
 
-    // Candidate place-names from Nominatim, in order of specificity.
     const a = loc.raw || {};
     const places = [a.city_district, a.city, a.town, a.municipality, a.county, a.state_district, loc.district, a.suburb, a.village]
-      .filter(Boolean)
-      .map(norm);
-    if (places.length === 0) return null;
+      .filter(Boolean).map(norm);
+    if (!places.length) return null;
 
-    // Score each MP: prefer exact-word matches over substring matches.
     const scored = [];
     for (const m of inState) {
       const c = norm(m.constituency);
@@ -201,35 +256,106 @@ const MP_DATA = (() => {
       }
       if (score > 0) scored.push({ m, score });
     }
-    if (scored.length === 0) return null;
+    if (!scored.length) return null;
     scored.sort((x, y) => y.score - x.score);
-
     const top = scored[0];
     const ties = scored.filter(s => s.score === top.score);
-    return {
-      member: top.m,
-      confidence: ties.length === 1 ? 'confident' : 'best-guess',
-      ambiguous: ties.length > 1,
-    };
+    return { member: top.m, confidence: ties.length === 1 ? 'confident' : 'best-guess' };
+  };
+
+  // Every Rajya Sabha member currently sitting from the user's state.
+  const findRSMembers = async (loc) => {
+    if (!loc) return [];
+    let data;
+    try { data = await load(); } catch (e) { return []; }
+    const targetState = norm(canonState(loc.state));
+    return data.rs
+      .filter(m => norm(m.state) === targetState)
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  };
+
+  // Resolve a `?house=&mp=<slug>` permalink to a specific member.
+  const findBySlug = async (house, slug) => {
+    if (!house || !slug) return null;
+    let data;
+    try { data = await load(); } catch (e) { return null; }
+    const pool = house === 'rs' ? data.rs : data.ls;
+    return pool.find(m => m._slug === slug) || null;
   };
 
   // Build action links to other transparency portals for a given MP.
-  // None of these sites expose per-MP deep links via a public API, so we use
-  // their official search URLs — the user lands on the right portal, one step
-  // away from the right record.
   const linksFor = (m) => {
-    const q = encodeURIComponent(`${m.name} ${m.constituency}`);
+    const where = m._house === 'rs' ? (m.state || '') : (m.constituency || m.state || '');
+    const q = encodeURIComponent(`${m.name} ${where}`);
     return {
-      profile: `https://righttoinformation.wiki${m.permalink}`,
+      profile: m.permalink ? `https://righttoinformation.wiki${m.permalink}` : 'https://righttoinformation.wiki/tools/mp-mla-tracker.html',
+      wiki:    m.wiki_url || '',
       myneta:  `https://www.myneta.info/myneta_search/?q=${q}`,
-      prs:     `https://prsindia.org/mptrack`,
-      mplads:  `https://empoweredindian.in/mplads`,
-      sansad:  'https://sansad.in/ls/members',
+      prs:     'https://prsindia.org/mptrack',
+      mplads:  'https://empoweredindian.in/mplads',
+      sansad:  m._house === 'rs' ? 'https://sansad.in/rs/members' : 'https://sansad.in/ls/members',
     };
   };
 
-  return { findMP, linksFor, cleanEmail };
+  return {
+    load,
+    findLSMember,
+    findRSMembers,
+    findBySlug,
+    linksFor,
+    cleanEmail,
+    cleanPhone,
+    slugFromPermalink,
+    PHOTO_BASE,
+  };
 })();
+
+// Convert a raw CSV-row member into the card shape that renderReps consumes.
+const memberToCard = (m, opts = {}) => {
+  const isRS = m._house === 'rs';
+  const links = MP_DATA.linksFor(m);
+  const partyLabel = m.party_full && m.party_full !== m.party
+    ? `${m.party} · ${m.party_full}`
+    : (m.party || '—');
+
+  const termsStr = m.no_of_terms
+    ? `${m.no_of_terms} term${+m.no_of_terms > 1 ? 's' : ''}`
+    : (isRS && m.term_end ? `Ends ${String(m.term_end).slice(0, 10)}` : '—');
+
+  const extras = isRS
+    ? [
+        { label: 'Role',      value: m.role || (m.is_minister === 'True' ? 'Minister' : 'Member') },
+        { label: 'Term ends', value: m.term_end ? String(m.term_end).slice(0, 10) : '—' },
+        { label: 'Cabinet',   value: m.cabinet || '—' },
+        { label: 'Gender',    value: m.gender || '—' },
+      ]
+    : [
+        { label: 'Age',           value: m.age ? `${m.age} yrs` : '—' },
+        { label: 'Terms',         value: termsStr },
+        { label: 'Qualification', value: m.qualification || '—' },
+        { label: 'Gender',        value: m.gender || '—' },
+      ];
+
+  return {
+    role: isRS ? 'Rajya Sabha · Member of Parliament' : 'Lok Sabha · Member of Parliament',
+    name: m.name,
+    party: partyLabel,
+    constituency: isRS ? m.state : `${m.constituency || '—'}, ${m.state || ''}`,
+    term: isRS ? 'Current Rajya Sabha' : 'Current Lok Sabha',
+    contact: MP_DATA.cleanEmail(m.email),
+    phone: MP_DATA.cleanPhone(isRS ? (m.mobile || m.permanent_phone) : m.phone),
+    attendance: isRS ? (m.cabinet || '—') : (m.profession || '—'),
+    type: isRS ? 'RS' : 'LS',
+    photoUrl: m.photo_url ? `${MP_DATA.PHOTO_BASE}${m.photo_url}` : null,
+    extras,
+    rtiTargets: [],
+    links,
+    confidence: opts.confidence || 'confident',
+    sourceNote: opts.sourceNote || null,
+    slug: m._slug,
+    house: m._house,
+  };
+};
 
 // ---- OpenStreetMap Overpass API ----
 // Returns real public infrastructure (schools, hospitals, govt offices,
@@ -364,51 +490,27 @@ const API = {
     }
   },
 
-  // Fetches the user's MP from the live RTI Wiki snapshot (sourced from
-  // sansad.in / NIC) and pairs it with an MLA verify-card. India still has
-  // no open API for state assembly members, so MLAs stay as verify-links.
+  // Fetches the user's MPs from the local CSV snapshots (sourced from
+  // sansad.in / NIC via RTI Wiki) and pairs them with an MLA verify-card.
+  // India still has no open API for state assembly members, so MLAs stay as
+  // verify-links.
   async getRepresentatives({ loc }) {
     const cards = [];
 
-    // ---- MP card ----
-    let mpMatch = null;
-    try { mpMatch = await MP_DATA.findMP(loc); } catch (e) { /* network fail → verify card */ }
+    // ---- Lok Sabha MP card (fuzzy constituency match) ----
+    let lsMatch = null;
+    try { lsMatch = await MP_DATA.findLSMember(loc); } catch (e) { /* file fail → verify card */ }
 
-    if (mpMatch && mpMatch.member) {
-      const m = mpMatch.member;
-      const off = m.official || {};
-      const links = MP_DATA.linksFor(m);
-      const partyLabel = m.party_full && m.party_full !== m.party ? `${m.party} · ${m.party_full}` : m.party;
-      const ageStr = off.age ? `${off.age} yrs` : '—';
-      const termsStr = off.no_of_terms ? `${off.no_of_terms} term${off.no_of_terms > 1 ? 's' : ''}` : '—';
-
-      cards.push({
-        role: 'Member of Parliament',
-        name: m.name,
-        party: partyLabel,
-        constituency: `${m.constituency}, ${m.state}`,
-        term: 'Current Lok Sabha',
-        contact: MP_DATA.cleanEmail(off.email),
-        phone: off.permanent_phone || off.delhi_phone || '—',
-        attendance: off.profession || '—',
-        type: 'MP',
-        photoUrl: off.photo_url ? `https://righttoinformation.wiki${off.photo_url}` : null,
-        extras: [
-          { label: 'Age', value: ageStr },
-          { label: 'Terms', value: termsStr },
-          { label: 'Qualification', value: off.qualification || '—' },
-          { label: 'Gender', value: m.gender || '—' },
-        ],
-        rtiTargets: m.rti_targets || [],
-        links,
-        confidence: mpMatch.confidence,
-        sourceNote: mpMatch.confidence === 'best-guess'
+    if (lsMatch && lsMatch.member) {
+      cards.push(memberToCard(lsMatch.member, {
+        confidence: lsMatch.confidence,
+        sourceNote: lsMatch.confidence === 'best-guess'
           ? `Best match for ${loc.district || loc.state}. Verify on sansad.in.`
           : null,
-      });
+      }));
     } else {
       cards.push({
-        role: 'Member of Parliament',
+        role: 'Lok Sabha · Member of Parliament',
         name: 'Verify on sansad.in',
         party: 'Official MP directory',
         constituency: loc.loksabha,
@@ -416,7 +518,7 @@ const API = {
         contact: 'feedback@sansad.in',
         phone: '+91 11 2303 5040',
         attendance: '—',
-        type: 'MP',
+        type: 'LS',
         verifyUrl: 'https://sansad.in/ls/members',
       });
     }
@@ -435,7 +537,18 @@ const API = {
       verifyUrl: `https://www.google.com/search?q=${encodeURIComponent(loc.state + ' legislative assembly MLA ' + (loc.raw?.suburb || loc.district || ''))}`,
     });
 
+    // ---- Rajya Sabha members (one card per sitting member from this state) ----
+    let rsList = [];
+    try { rsList = await MP_DATA.findRSMembers(loc); } catch (e) { /* ignore */ }
+    for (const m of rsList) cards.push(memberToCard(m));
+
     return cards;
+  },
+
+  // Resolve a `?house=&mp=<slug>` permalink to a single rep card.
+  async getRepByPermalink({ house, slug }) {
+    const m = await MP_DATA.findBySlug(house, slug);
+    return m ? memberToCard(m) : null;
   },
 
   // REAL public infrastructure within `radiusM` of the user, via OSM Overpass.
@@ -1377,6 +1490,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Render the two real catalogues right away (no GPS required for these).
   renderCatalogues();
+
+  // Permalink handling: ?house=rs&mp=<slug>  or  ?house=ls&mp=<slug>
+  // Renders just the shared MP's card and scrolls to it — no GPS required.
+  (async () => {
+    const params = new URLSearchParams(location.search);
+    const house = params.get('house');
+    const slug  = params.get('mp');
+    if (!house || !slug || (house !== 'rs' && house !== 'ls')) return;
+    try {
+      Loader.show('Loading shared representative…');
+      const card = await API.getRepByPermalink({ house, slug });
+      if (!card) {
+        Toast.show({ title: 'MP not found', message: `No ${house.toUpperCase()} member with slug "${slug}".`, type: 'warning' });
+        return;
+      }
+      renderReps([card]);
+      document.getElementById('reps')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      Toast.show({ title: 'Loaded shared MP', message: card.name, type: 'success' });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      Loader.hide();
+    }
+  })();
 
   // Hero CTA — request real GPS and load live data.
   $('#useLocationBtn')?.addEventListener('click', async () => {
