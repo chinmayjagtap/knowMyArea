@@ -499,6 +499,70 @@ input, select, textarea { font: inherit; color: inherit; }
   font-style: italic;
 }
 
+/* ---------- 8b. Collapsible Rajya Sabha group ---------- */
+/* RS MPs are elected per state, so a single user can have 10–20 of them.
+   We collapse them under one expander so the page stays scannable. */
+.rep-rs-group {
+  grid-column: 1 / -1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 200ms ease, border-color 200ms ease;
+}
+.rep-rs-group[open] { box-shadow: var(--shadow-md); border-color: var(--border-strong); }
+.rep-rs-group > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px;
+}
+.rep-rs-group > summary::-webkit-details-marker { display: none; }
+.rep-rs-group__title {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.rep-rs-group__title b {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.rep-rs-group__title span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.rep-rs-group__chip {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.rep-rs-group__chip::before {
+  content: '▸';
+  transition: transform 200ms ease;
+  display: inline-block;
+}
+.rep-rs-group[open] .rep-rs-group__chip::before { transform: rotate(90deg); }
+.rep-rs-group[open] .rep-rs-group__chip::after { content: 'Hide'; }
+.rep-rs-group:not([open]) .rep-rs-group__chip::after { content: 'Show all'; }
+.rep-rs-group__note {
+  margin: 14px 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.rep-rs-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+}
+
 /* ---------- 9. KPI cards ---------- */
 .kpi-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));

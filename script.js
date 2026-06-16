@@ -801,87 +801,120 @@ const renderRepsEmpty = () => {
 };
 
 /* ---- Representatives ---- */
-const renderReps = (reps) => {
-  const grid = $('#repGrid');
-  if (!grid) return;
-  grid.innerHTML = reps.map(r => {
-    // Rich real-MP card (has photo + extras + RTI prompts + portal links).
-    if (r.extras && r.links) {
-      const avatar = r.photoUrl
-        ? `<img class="rep-card__photo" src="${escapeHTML(r.photoUrl)}" alt="${escapeHTML(r.name)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';" />
-           <div class="rep-card__avatar" style="display:none" aria-hidden="true">${initials(r.name)}</div>`
-        : `<div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>`;
-      const confBadge = r.confidence === 'best-guess'
-        ? `<span class="rep-card__chip rep-card__chip--warn" title="${escapeHTML(r.sourceNote || '')}">Best match · verify</span>`
-        : `<span class="rep-card__chip rep-card__chip--ok">Live · sansad.in</span>`;
-      const extrasHTML = r.extras.map(x => `
-        <div><span>${escapeHTML(x.label)}</span><b>${escapeHTML(x.value)}</b></div>
-      `).join('');
-      const contactRow = [
-        r.contact && r.contact !== '—' ? `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>` : '',
-        r.phone && r.phone !== '—' ? `<a class="btn btn--ghost btn--sm" href="tel:${String(r.phone).replace(/[^\d+]/g,'')}">${ICONS.phone} Call</a>` : '',
-      ].filter(Boolean).join('');
-      const rtiHTML = (r.rtiTargets && r.rtiTargets.length)
-        ? `<details class="rep-card__rti">
-             <summary>${r.rtiTargets.length} ready-to-file RTI subjects</summary>
-             <ul>${r.rtiTargets.slice(0, 3).map(t => `
-               <li><b>${escapeHTML(t.target)}</b><br/><span>${escapeHTML(t.subject)}</span></li>
-             `).join('')}</ul>
-           </details>`
-        : '';
-      return `
-        <article class="rep-card rep-card--rich reveal">
-          <div class="rep-card__head">
-            ${avatar}
-            <div class="rep-card__heading">
-              <div class="rep-card__role">${escapeHTML(r.role)} ${confBadge}</div>
-              <div class="rep-card__name">${escapeHTML(r.name)}</div>
-              <div class="rep-card__party">${escapeHTML(r.party)} · ${escapeHTML(r.constituency)}</div>
-            </div>
-          </div>
-          <div class="rep-card__meta">
-            ${extrasHTML}
-          </div>
-          ${rtiHTML}
-          <div class="rep-card__actions">
-            <a class="btn btn--primary btn--sm" href="${r.links.profile}" target="_blank" rel="noopener">${ICONS.external} Full profile</a>
-            <a class="btn btn--ghost btn--sm" href="${r.links.sansad}" target="_blank" rel="noopener">${ICONS.external} sansad.in</a>
-            <a class="btn btn--ghost btn--sm" href="${r.links.myneta}" target="_blank" rel="noopener">${ICONS.external} MyNeta</a>
-            <a class="btn btn--ghost btn--sm" href="${r.links.prs}" target="_blank" rel="noopener">${ICONS.external} PRS Track</a>
-            <a class="btn btn--ghost btn--sm" href="${r.links.mplads}" target="_blank" rel="noopener">${ICONS.external} MPLADS</a>
-            ${contactRow}
-          </div>
-          <div class="rep-card__source">Source: RTI Wiki · sansad.in (NIC). Verify before use.</div>
-        </article>
-      `;
-    }
 
-    // Verify-only card (current MLA fallback + MP when match fails).
+// Render a single rep card. Used by both the main grid and the
+// collapsible Rajya Sabha group below it.
+const repCardHTML = (r) => {
+  // Rich real-MP card (has photo + extras + RTI prompts + portal links).
+  if (r.extras && r.links) {
+    const avatar = r.photoUrl
+      ? `<img class="rep-card__photo" src="${escapeHTML(r.photoUrl)}" alt="${escapeHTML(r.name)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';" />
+         <div class="rep-card__avatar" style="display:none" aria-hidden="true">${initials(r.name)}</div>`
+      : `<div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>`;
+    const confBadge = r.confidence === 'best-guess'
+      ? `<span class="rep-card__chip rep-card__chip--warn" title="${escapeHTML(r.sourceNote || '')}">Best match · verify</span>`
+      : `<span class="rep-card__chip rep-card__chip--ok">Live · sansad.in</span>`;
+    const extrasHTML = r.extras.map(x => `
+      <div><span>${escapeHTML(x.label)}</span><b>${escapeHTML(x.value)}</b></div>
+    `).join('');
+    const contactRow = [
+      r.contact && r.contact !== '—' ? `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>` : '',
+      r.phone && r.phone !== '—' ? `<a class="btn btn--ghost btn--sm" href="tel:${String(r.phone).replace(/[^\d+]/g,'')}">${ICONS.phone} Call</a>` : '',
+    ].filter(Boolean).join('');
+    const rtiHTML = (r.rtiTargets && r.rtiTargets.length)
+      ? `<details class="rep-card__rti">
+           <summary>${r.rtiTargets.length} ready-to-file RTI subjects</summary>
+           <ul>${r.rtiTargets.slice(0, 3).map(t => `
+             <li><b>${escapeHTML(t.target)}</b><br/><span>${escapeHTML(t.subject)}</span></li>
+           `).join('')}</ul>
+         </details>`
+      : '';
     return `
-      <article class="rep-card reveal">
+      <article class="rep-card rep-card--rich reveal">
         <div class="rep-card__head">
-          <div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>
-          <div>
-            <div class="rep-card__role">${escapeHTML(r.role)}</div>
+          ${avatar}
+          <div class="rep-card__heading">
+            <div class="rep-card__role">${escapeHTML(r.role)} ${confBadge}</div>
             <div class="rep-card__name">${escapeHTML(r.name)}</div>
-            <div class="rep-card__party">${escapeHTML(r.party)}</div>
+            <div class="rep-card__party">${escapeHTML(r.party)} · ${escapeHTML(r.constituency)}</div>
           </div>
         </div>
         <div class="rep-card__meta">
-          <div><span>Constituency</span><b>${escapeHTML(r.constituency)}</b></div>
-          <div><span>Term</span><b>${escapeHTML(r.term)}</b></div>
-          <div><span>Attendance</span><b>${escapeHTML(r.attendance)}</b></div>
-          <div><span>Phone</span><b>${escapeHTML(r.phone)}</b></div>
+          ${extrasHTML}
         </div>
+        ${rtiHTML}
         <div class="rep-card__actions">
-          ${r.verifyUrl
-            ? `<a class="btn btn--primary btn--sm" href="${r.verifyUrl}" target="_blank" rel="noopener">${ICONS.external} Verify current rep</a>`
-            : `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>
-               <a class="btn btn--ghost btn--sm" href="tel:${r.phone.replace(/\s+/g,'')}">${ICONS.phone} Call</a>`}
+          <a class="btn btn--primary btn--sm" href="${r.links.profile}" target="_blank" rel="noopener">${ICONS.external} Full profile</a>
+          <a class="btn btn--ghost btn--sm" href="${r.links.sansad}" target="_blank" rel="noopener">${ICONS.external} sansad.in</a>
+          <a class="btn btn--ghost btn--sm" href="${r.links.myneta}" target="_blank" rel="noopener">${ICONS.external} MyNeta</a>
+          <a class="btn btn--ghost btn--sm" href="${r.links.prs}" target="_blank" rel="noopener">${ICONS.external} PRS Track</a>
+          <a class="btn btn--ghost btn--sm" href="${r.links.mplads}" target="_blank" rel="noopener">${ICONS.external} MPLADS</a>
+          ${contactRow}
         </div>
+        <div class="rep-card__source">Source: RTI Wiki · sansad.in (NIC). Verify before use.</div>
       </article>
     `;
-  }).join('');
+  }
+
+  // Verify-only card (current MLA fallback + MP when match fails).
+  return `
+    <article class="rep-card reveal">
+      <div class="rep-card__head">
+        <div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>
+        <div>
+          <div class="rep-card__role">${escapeHTML(r.role)}</div>
+          <div class="rep-card__name">${escapeHTML(r.name)}</div>
+          <div class="rep-card__party">${escapeHTML(r.party)}</div>
+        </div>
+      </div>
+      <div class="rep-card__meta">
+        <div><span>Constituency</span><b>${escapeHTML(r.constituency)}</b></div>
+        <div><span>Term</span><b>${escapeHTML(r.term)}</b></div>
+        <div><span>Attendance</span><b>${escapeHTML(r.attendance)}</b></div>
+        <div><span>Phone</span><b>${escapeHTML(r.phone)}</b></div>
+      </div>
+      <div class="rep-card__actions">
+        ${r.verifyUrl
+          ? `<a class="btn btn--primary btn--sm" href="${r.verifyUrl}" target="_blank" rel="noopener">${ICONS.external} Verify current rep</a>`
+          : `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>
+             <a class="btn btn--ghost btn--sm" href="tel:${r.phone.replace(/\s+/g,'')}">${ICONS.phone} Call</a>`}
+      </div>
+    </article>
+  `;
+};
+
+const renderReps = (reps) => {
+  const grid = $('#repGrid');
+  if (!grid) return;
+
+  // Split: Lok Sabha + MLA show up front; Rajya Sabha members (one per state,
+  // can be 18+) collapse into a single expandable group so the page doesn't
+  // turn into a wall of cards.
+  const primary = reps.filter(r => r.type !== 'RS');
+  const rs      = reps.filter(r => r.type === 'RS');
+
+  const stateName = rs[0]?.constituency || '';
+  const rsGroupHTML = rs.length
+    ? `
+      <details class="rep-rs-group reveal">
+        <summary>
+          <span class="rep-rs-group__title">
+            <b>Rajya Sabha · ${rs.length} member${rs.length > 1 ? 's' : ''}</b>
+            ${stateName ? `<span>from ${escapeHTML(stateName)}</span>` : ''}
+          </span>
+          <span class="rep-rs-group__chip" aria-hidden="true"></span>
+        </summary>
+        <p class="rep-rs-group__note">
+          Rajya Sabha MPs are elected by the state legislature, so every member from your state represents you.
+        </p>
+        <div class="rep-rs-grid">
+          ${rs.map(repCardHTML).join('')}
+        </div>
+      </details>
+    `
+    : '';
+
+  grid.innerHTML = primary.map(repCardHTML).join('') + rsGroupHTML;
   Reveal.init();
 };
 
