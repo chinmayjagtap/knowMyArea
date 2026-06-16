@@ -393,7 +393,8 @@ input, select, textarea { font: inherit; color: inherit; }
 /* ---------- 8. Representative cards ---------- */
 .rep-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 24px;
+  column-gap: 24px;
+  row-gap: 16px;
 }
 .rep-card {
   background: var(--card);
