@@ -190,8 +190,14 @@ const MOCK = {
 
 /* =========================================================
    2. API ABSTRACTION LAYER
-   Today these return mock data. Tomorrow swap the body with
-   `fetch()` calls to MyGov / data.gov.in / state CMS APIs.
+   Real data sources used today:
+     • OpenStreetMap Nominatim     — reverse geocoding
+     • OpenStreetMap Overpass API  — real public infrastructure near you
+     • Wikipedia REST API          — constituency / area info
+   Mock fallbacks remain for:
+     • Representatives  (no public MP/MLA API in India)
+     • Project budgets  (sources are PDFs, not APIs)
+     • Schemes & complaint portals (already real URLs to gov sites)
 ========================================================= */
 
 // --- Geolocation helpers ---
@@ -208,7 +214,6 @@ const getBrowserCoords = () => new Promise((resolve, reject) => {
 });
 
 // Reverse geocode via OpenStreetMap Nominatim (no API key required).
-// Returns a normalised civic-location object with best-guess ward/district/state.
 const reverseGeocode = async (lat, lng) => {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`;
   const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
@@ -225,8 +230,8 @@ const reverseGeocode = async (lat, lng) => {
     coords: { lat, lng },
     address: shortAddr,
     ward: `Ward · ${ward}`,
-    assembly: `${cityOrTown} Vidhan Sabha`,           // best-effort — real mapping needs ECI shapefile lookup
-    loksabha: `${district} Lok Sabha`,                // best-effort — real mapping needs ECI shapefile lookup
+    assembly: `${cityOrTown} Assembly Constituency`,    // best-effort — exact mapping needs ECI shapefiles
+    loksabha: `${district} Lok Sabha Constituency`,     // best-effort — exact mapping needs ECI shapefiles
     district,
     state,
     pincode,
@@ -234,44 +239,223 @@ const reverseGeocode = async (lat, lng) => {
   };
 };
 
-const API = {
-  // Returns the user's civic location.
-  // Pass { useGPS: true } to request browser geolocation + reverse geocode.
-  // Without the flag, returns the bundled demo (Kothrud, Pune).
-  // TODO(real-api): map coords → ward/AC/PC using ECI delimitation shapefiles (data.gov.in).
-  async getLocation({ useGPS = false } = {}) {
-    if (!useGPS) {
-      await delay(400);
-      return MOCK.location;
-    }
-    const { lat, lng } = await getBrowserCoords();
+// ---- OpenStreetMap Overpass API ----
+// Returns real public infrastructure (schools, hospitals, govt offices,
+// police stations, water works, etc.) within `radiusM` metres of (lat, lng).
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
+];
+
+const fetchOverpass = async (query) => {
+  let lastErr;
+  for (const ep of OVERPASS_ENDPOINTS) {
     try {
-      return await reverseGeocode(lat, lng);
-    } catch (e) {
-      // Reverse geocode failed but we still have raw coords — return a minimal record.
+      const res = await fetch(ep, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(query),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('All Overpass endpoints failed');
+};
+
+// Tag → human-readable category, department, badge style.
+const ASSET_TAXONOMY = {
+  // Education
+  school:          { category: 'Schools',      department: 'Education Department',          accent: 'primary' },
+  college:         { category: 'Schools',      department: 'Higher Education Department',   accent: 'primary' },
+  university:      { category: 'Schools',      department: 'Higher Education Department',   accent: 'primary' },
+  kindergarten:    { category: 'Schools',      department: 'Women & Child Development',     accent: 'primary' },
+  library:         { category: 'Schools',      department: 'Public Libraries Directorate',  accent: 'primary' },
+  // Health
+  hospital:        { category: 'Healthcare',   department: 'Health & Family Welfare',       accent: 'success' },
+  clinic:          { category: 'Healthcare',   department: 'Health & Family Welfare',       accent: 'success' },
+  doctors:         { category: 'Healthcare',   department: 'Health & Family Welfare',       accent: 'success' },
+  pharmacy:        { category: 'Healthcare',   department: 'Health Department',             accent: 'success' },
+  // Safety
+  police:          { category: 'Infrastructure', department: 'State Police',                accent: 'primary' },
+  fire_station:    { category: 'Infrastructure', department: 'Fire & Emergency Services',   accent: 'danger' },
+  // Civic
+  townhall:        { category: 'Infrastructure', department: 'Municipal Corporation',       accent: 'primary' },
+  courthouse:      { category: 'Infrastructure', department: 'Department of Justice',       accent: 'primary' },
+  post_office:     { category: 'Infrastructure', department: 'India Post',                  accent: 'primary' },
+  community_centre:{ category: 'Infrastructure', department: 'Municipal Corporation',       accent: 'primary' },
+  social_facility: { category: 'Healthcare',   department: 'Social Justice Department',     accent: 'success' },
+  // Water
+  water_tower:     { category: 'Water',        department: 'Water Supply Department',       accent: 'primary' },
+  water_works:     { category: 'Water',        department: 'Water Supply Department',       accent: 'primary' },
+  wastewater_plant:{ category: 'Water',        department: 'Sewerage Department',           accent: 'primary' },
+  drinking_water:  { category: 'Water',        department: 'Water Supply Department',       accent: 'primary' },
+  // Government generic
+  government:      { category: 'Infrastructure', department: 'Government Office',           accent: 'primary' },
+};
+
+const classifyAsset = (tags = {}) => {
+  if (tags.amenity && ASSET_TAXONOMY[tags.amenity]) return ASSET_TAXONOMY[tags.amenity];
+  if (tags.office === 'government')                 return ASSET_TAXONOMY.government;
+  if (tags.man_made && ASSET_TAXONOMY[tags.man_made]) return ASSET_TAXONOMY[tags.man_made];
+  return { category: 'Infrastructure', department: 'Government Asset', accent: 'primary' };
+};
+
+const fetchPublicAssets = async ({ lat, lng, radiusM = 3000 }) => {
+  const q = `
+    [out:json][timeout:25];
+    (
+      node["amenity"~"^(school|college|university|kindergarten|library|hospital|clinic|doctors|pharmacy|police|fire_station|townhall|courthouse|post_office|community_centre|social_facility|drinking_water)$"](around:${radiusM},${lat},${lng});
+      way["amenity"~"^(school|college|university|kindergarten|library|hospital|clinic|doctors|pharmacy|police|fire_station|townhall|courthouse|post_office|community_centre|social_facility)$"](around:${radiusM},${lat},${lng});
+      node["office"="government"](around:${radiusM},${lat},${lng});
+      way["office"="government"](around:${radiusM},${lat},${lng});
+      node["man_made"~"^(water_tower|water_works|wastewater_plant)$"](around:${radiusM},${lat},${lng});
+      way["man_made"~"^(water_tower|water_works|wastewater_plant)$"](around:${radiusM},${lat},${lng});
+    );
+    out center 80;
+  `;
+  const data = await fetchOverpass(q);
+  const userCoords = { lat, lng };
+  const seenNames = new Set();
+  return (data.elements || [])
+    .map(el => {
+      const elLat = el.lat ?? el.center?.lat;
+      const elLng = el.lon ?? el.center?.lon;
+      if (elLat == null || elLng == null) return null;
+      const tags = el.tags || {};
+      const klass = classifyAsset(tags);
+      const name = tags.name || tags['name:en'] || tags.operator || `${klass.category} facility`;
+      return {
+        id: `osm-${el.type}-${el.id}`,
+        name,
+        department: tags.operator || klass.department,
+        category: klass.category,
+        budget: null,                          // OSM doesn't carry budget data
+        status: 'Operational',                 // existing public asset
+        progress: 100,
+        completion: tags.start_date || 'In service',
+        contractor: tags.operator || 'Government of India',
+        distance: haversineKm(userCoords, { lat: elLat, lng: elLng }),
+        lat: elLat, lng: elLng,
+        source: 'OpenStreetMap',
+        osmType: el.type,
+        osmId: el.id,
+        tags,
+      };
+    })
+    .filter(Boolean)
+    .filter(a => {
+      // De-duplicate same-name assets within ~50 m.
+      const key = `${a.name}|${a.lat.toFixed(3)}|${a.lng.toFixed(3)}`;
+      if (seenNames.has(key)) return false;
+      seenNames.add(key); return true;
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 30);
+};
+
+// Compute live KPI tiles from real assets.
+const computeFunds = (assets) => {
+  const count = (cat) => assets.filter(a => a.category === cat).length;
+  return {
+    assetsNearby:  assets.length,
+    schools:       count('Schools'),
+    healthcare:    count('Healthcare'),
+    waterInfra:    count('Water'),
+    infrastructure:count('Infrastructure'),
+    coverage:      Math.min(100, Math.round((assets.length / 25) * 100)), // 25 assets = 100% coverage proxy
+  };
+};
+
+// Wikipedia REST API — fetches a short summary for an area / constituency.
+const fetchWikipediaSummary = async (title) => {
+  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (data.type === 'disambiguation') return null;
+  return {
+    title: data.title,
+    extract: data.extract,
+    url: data.content_urls?.desktop?.page,
+    thumbnail: data.thumbnail?.source,
+  };
+};
+
+const API = {
+  // Get the user's civic location.
+  async getLocation({ useGPS = false } = {}) {
+    if (!useGPS) { await delay(300); return MOCK.location; }
+    const { lat, lng } = await getBrowserCoords();
+    try { return await reverseGeocode(lat, lng); }
+    catch (e) {
       return {
         coords: { lat, lng },
         address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
         ward: 'Ward · unavailable',
         assembly: 'Assembly · unavailable',
         loksabha: 'Lok Sabha · unavailable',
-        district: 'Unavailable',
-        state: 'Unavailable',
-        pincode: '—',
+        district: 'Unavailable', state: 'Unavailable', pincode: '—',
       };
     }
   },
-  // TODO(real-api): https://api.sansad.in/ or PRS Legislative Research dataset
-  async getMP() { await delay(120); return MOCK.representatives.find(r => r.type === 'MP'); },
-  // TODO(real-api): state legislative assembly open data
-  async getMLA() { await delay(120); return MOCK.representatives.find(r => r.type === 'MLA'); },
-  // TODO(real-api): data.gov.in project tracking datasets
-  async getProjects() { await delay(180); return MOCK.projects.map(p => ({ ...p })); },
-  // TODO(real-api): myscheme.gov.in API
-  async getSchemes() { await delay(140); return MOCK.schemes; },
-  // TODO(real-api): consolidated fund utilisation data from CAG / state finance dept
-  async getFunds() { await delay(120); return MOCK.funds; },
-  async getComplaintPortals() { await delay(80); return MOCK.complaints; },
+
+  // NOTE: India has no open API for current MP/MLA data. We show real
+  // constituency-level context from Wikipedia + official-portal links so
+  // users can verify the current representative on sansad.in / their
+  // state assembly site. Demo cards remain as illustrative defaults.
+  async getRepresentatives({ loc } = {}) {
+    await delay(60);
+    if (!loc || loc === MOCK.location) return MOCK.representatives;
+    return [
+      {
+        role: 'Member of Parliament',
+        name: 'Verify on sansad.in',
+        party: 'Live MP directory',
+        constituency: loc.loksabha,
+        term: 'Current Lok Sabha',
+        contact: 'feedback@sansad.in',
+        phone: '+91 11 2303 5040',
+        attendance: '—',
+        type: 'MP',
+        verifyUrl: `https://sansad.in/ls/members`,
+      },
+      {
+        role: 'Member of Legislative Assembly',
+        name: 'Verify on state portal',
+        party: 'Live MLA directory',
+        constituency: loc.assembly,
+        term: `${loc.state} Assembly`,
+        contact: 'cs@maharashtra.gov.in',
+        phone: '—',
+        attendance: '—',
+        type: 'MLA',
+        verifyUrl: `https://www.google.com/search?q=${encodeURIComponent(loc.state + ' legislative assembly MLA ' + (loc.raw?.suburb || loc.district || ''))}`,
+      },
+    ];
+  },
+
+  // REAL DATA via OpenStreetMap Overpass — public infrastructure within ~3 km.
+  async getPublicAssets({ coords, radiusM = 3000 } = {}) {
+    if (!coords) return [];
+    return fetchPublicAssets({ lat: coords.lat, lng: coords.lng, radiusM });
+  },
+
+  // Demo project list (with budgets & contractors). Used as fallback only.
+  async getProjects() { await delay(120); return MOCK.projects.map(p => ({ ...p })); },
+
+  // Real Indian welfare schemes with real apply / learn URLs.
+  async getSchemes() { await delay(80); return MOCK.schemes; },
+
+  // Computed live from real assets when available.
+  async getFunds() { await delay(80); return MOCK.funds; },
+
+  // Real complaint portal URLs (PMC, MSEDCL, Aaple Sarkar, CPGRAMS).
+  async getComplaintPortals() { await delay(60); return MOCK.complaints; },
+
+  // Wikipedia summary for a constituency / locality.
+  async getAreaInfo(title) { return fetchWikipediaSummary(title); },
 };
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
@@ -288,8 +472,7 @@ const haversineKm = (a, b) => {
   return 2 * R * Math.asin(Math.sqrt(h));
 };
 
-// Translate the demo project pins so they sit around the user's coordinates,
-// preserving their relative geography. Distances are recomputed from real coords.
+// Translate demo project pins around the user (used only when fallback to demo).
 const relocateProjects = (projects, userCoords) => {
   const origin = MOCK.location.coords;
   const dLat = userCoords.lat - origin.lat;
@@ -526,8 +709,10 @@ const renderReps = (reps) => {
         <div><span>Phone</span><b>${escapeHTML(r.phone)}</b></div>
       </div>
       <div class="rep-card__actions">
-        <a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>
-        <a class="btn btn--ghost btn--sm" href="tel:${r.phone.replace(/\s+/g,'')}">${ICONS.phone} Call</a>
+        ${r.verifyUrl
+          ? `<a class="btn btn--primary btn--sm" href="${r.verifyUrl}" target="_blank" rel="noopener">${ICONS.external} Verify current rep</a>`
+          : `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>
+             <a class="btn btn--ghost btn--sm" href="tel:${r.phone.replace(/\s+/g,'')}">${ICONS.phone} Call</a>`}
       </div>
     </article>
   `).join('');
@@ -582,12 +767,21 @@ const Projects = (() => {
       'In Progress': 'badge--primary',
       'Delayed': 'badge--danger',
       'Planned': 'badge--muted',
+      'Operational': 'badge--success',
     };
     return `<span class="badge ${map[s] || 'badge--muted'}">${escapeHTML(s)}</span>`;
   };
 
+  const budgetCell = (p) =>
+    p.budget != null
+      ? `<div><span>Budget</span><b>${formatINR(p.budget)}</b></div>`
+      : `<div><span>Type</span><b>Public Asset</b></div>`;
+
+  const sourceBadge = (p) =>
+    p.source ? `<span class="badge badge--muted" title="Data from ${escapeHTML(p.source)}">${escapeHTML(p.source)}</span>` : '';
+
   const cardHTML = (p) => `
-    <article class="project reveal" data-id="${p.id}" data-status="${escapeHTML(p.status)}" tabindex="0" role="button" aria-label="View ${escapeHTML(p.name)}">
+    <article class="project reveal" data-id="${escapeHTML(p.id)}" data-status="${escapeHTML(p.status)}" tabindex="0" role="button" aria-label="View ${escapeHTML(p.name)}">
       <div class="project__head">
         <div>
           <div class="project__cat">${escapeHTML(p.category)}</div>
@@ -597,15 +791,15 @@ const Projects = (() => {
         ${statusBadge(p.status)}
       </div>
       <div class="project__meta">
-        <div><span>Budget</span><b>${formatINR(p.budget)}</b></div>
-        <div><span>Completion</span><b>${escapeHTML(p.completion)}</b></div>
-        <div><span>Contractor</span><b>${escapeHTML(p.contractor)}</b></div>
+        ${budgetCell(p)}
+        <div><span>Status</span><b>${escapeHTML(p.completion)}</b></div>
+        <div><span>Operator</span><b>${escapeHTML(p.contractor)}</b></div>
         <div><span>Distance</span><b>${p.distance.toFixed(1)} km</b></div>
       </div>
       <div class="project__progress" aria-label="Progress ${p.progress}%"><div style="width:${p.progress}%"></div></div>
       <div class="project__foot">
         <span>${ICONS.pin} ${p.distance.toFixed(1)} km away</span>
-        <span><b>${p.progress}%</b> complete</span>
+        ${sourceBadge(p)}
       </div>
     </article>
   `;
@@ -639,24 +833,28 @@ const Projects = (() => {
     const p = all.find(x => x.id === id);
     if (!p) return;
     const body = $('#modalBody');
+    const osmLink = p.osmType && p.osmId
+      ? `<a class="btn btn--ghost btn--sm" href="https://www.openstreetmap.org/${p.osmType}/${p.osmId}" target="_blank" rel="noopener">${ICONS.external} View on OpenStreetMap</a>`
+      : '';
     body.innerHTML = `
       <span class="pill"><span class="pill__dot"></span>${escapeHTML(p.category)}</span>
       <h3 style="margin: 14px 0 6px; font-size: 1.5rem;">${escapeHTML(p.name)}</h3>
       <p style="color: var(--muted); margin-bottom: 18px;">${escapeHTML(p.department)}</p>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom: 18px;">
         ${statusBadge(p.status)}
-        <span class="badge badge--muted">${p.progress}% complete</span>
+        ${p.source ? `<span class="badge badge--muted">Source · ${escapeHTML(p.source)}</span>` : `<span class="badge badge--muted">${p.progress}% complete</span>`}
       </div>
-      <div class="modal-row"><span>Budget</span><b>${formatINR(p.budget)}</b></div>
+      ${p.budget != null ? `<div class="modal-row"><span>Budget</span><b>${formatINR(p.budget)}</b></div>` : ''}
       <div class="modal-row"><span>Status</span><b>${escapeHTML(p.status)}</b></div>
-      <div class="modal-row"><span>Expected completion</span><b>${escapeHTML(p.completion)}</b></div>
-      <div class="modal-row"><span>Contractor</span><b>${escapeHTML(p.contractor)}</b></div>
+      <div class="modal-row"><span>${p.budget != null ? 'Expected completion' : 'In service since'}</span><b>${escapeHTML(p.completion)}</b></div>
+      <div class="modal-row"><span>${p.budget != null ? 'Contractor' : 'Operator'}</span><b>${escapeHTML(p.contractor)}</b></div>
       <div class="modal-row"><span>Distance from you</span><b>${p.distance.toFixed(1)} km</b></div>
       <div class="modal-row"><span>Coordinates</span><b>${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</b></div>
-      <div class="project__progress" style="margin: 20px 0 0;"><div style="width:${p.progress}%"></div></div>
+      ${p.budget != null ? `<div class="project__progress" style="margin: 20px 0 0;"><div style="width:${p.progress}%"></div></div>` : ''}
       <div style="margin-top: 24px; display:flex; gap:10px; flex-wrap:wrap;">
         <button class="btn btn--primary btn--sm" id="modalReport">${ICONS.warn} Report an issue</button>
         <button class="btn btn--ghost btn--sm" id="modalShare">${ICONS.external} Share</button>
+        ${osmLink}
       </div>
     `;
     const modal = $('#projectModal');
@@ -670,7 +868,7 @@ const Projects = (() => {
       const url = `${location.origin}${location.pathname}#projects`;
       try {
         if (navigator.share) {
-          await navigator.share({ title: p.name, text: `${p.name} · ${formatINR(p.budget)}`, url });
+          await navigator.share({ title: p.name, text: `${p.name} · ${p.category}`, url });
         } else if (navigator.clipboard) {
           await navigator.clipboard.writeText(url);
           Toast.show({ title: 'Link copied', type: 'success' });
@@ -737,6 +935,7 @@ const SpendingMap = (() => {
 
   const statusClass = (s) => ({
     'Completed':   's-completed',
+    'Operational': 's-completed',
     'In Progress': 's-progress',
     'Delayed':     's-delayed',
     'Planned':     's-planned',
@@ -747,10 +946,10 @@ const SpendingMap = (() => {
       <div class="popup-title">${escapeHTML(p.name)}</div>
       <div class="popup-dept">${escapeHTML(p.department)}</div>
       <div class="popup-row"><span>Status</span><b>${escapeHTML(p.status)}</b></div>
-      <div class="popup-row"><span>Budget</span><b>${formatINR(p.budget)}</b></div>
-      <div class="popup-row"><span>Contractor</span><b>${escapeHTML(p.contractor)}</b></div>
-      <div class="popup-row"><span>Completion</span><b>${escapeHTML(p.completion)}</b></div>
-      <div class="popup-progress"><div style="width:${p.progress}%"></div></div>
+      ${p.budget != null ? `<div class="popup-row"><span>Budget</span><b>${formatINR(p.budget)}</b></div>` : ''}
+      <div class="popup-row"><span>${p.budget != null ? 'Contractor' : 'Operator'}</span><b>${escapeHTML(p.contractor)}</b></div>
+      <div class="popup-row"><span>Distance</span><b>${p.distance.toFixed(1)} km</b></div>
+      ${p.source ? `<div class="popup-row"><span>Source</span><b>${escapeHTML(p.source)}</b></div>` : ''}
     </div>
   `;
 
@@ -867,41 +1066,116 @@ const Score = (() => {
 /* =========================================================
    12. BOOT
 ========================================================= */
+
+// Update the KPI tiles. Accepts either demo funds OR computed-live funds.
+function renderKPIs(funds, { live = false } = {}) {
+  const tiles = $$('.kpi');
+  if (!tiles.length) return;
+
+  const update = (idx, value, suffix = '', prefix = '', label, trend) => {
+    const tile = tiles[idx];
+    if (!tile) return;
+    const span = $('[data-counter]', tile);
+    if (span) {
+      span.dataset.target = value;
+      span.dataset.prefix = prefix;
+      span.dataset.suffix = suffix;
+      span.dataset.done = '';
+      span.textContent = `${prefix}0${suffix}`;
+    }
+    if (label) $('.kpi__label', tile).textContent = label;
+    if (trend) $('.kpi__trend', tile).textContent = trend;
+  };
+
+  if (live) {
+    update(0, funds.assetsNearby, '', '', 'Public Assets Nearby', 'Live · OpenStreetMap');
+    update(1, funds.schools,      '', '', 'Schools & Libraries',  'Within 3 km radius');
+    update(2, funds.healthcare,   '', '', 'Healthcare Facilities','Hospitals · clinics · pharmacies');
+    update(3, funds.waterInfra + funds.infrastructure, '', '', 'Govt Offices & Utilities', 'Police · municipal · water');
+  } else {
+    update(0, funds.spending,    ' Cr', '₹', 'Public Spending Nearby', '▲ 12% vs last year');
+    update(1, funds.ongoing,     '',    '',  'Ongoing Projects',       'In active execution');
+    update(2, funds.completed,   '',    '',  'Completed Projects',     '▲ Delivered this FY');
+    update(3, funds.utilization, '%',   '',  'Fund Utilization',       'Sanctioned vs spent');
+  }
+  // Re-trigger counter animation for the new values.
+  $$('.kpi [data-counter]').forEach(el => {
+    el.dataset.done = '';
+  });
+  // Section eyebrow + title + sub
+  const head = $('#money .section__head');
+  if (head) {
+    head.querySelector('.eyebrow').textContent = live ? 'Live · within 3 km' : 'The numbers';
+    head.querySelector('.section__title').textContent = live ? 'Civic infrastructure around you' : 'Money around me';
+    head.querySelector('.section__sub').textContent = live
+      ? 'Real public assets tagged in OpenStreetMap within a 3 km radius of your detected location.'
+      : 'Aggregated public spending within a 5 km radius of your detected location.';
+  }
+  // Kick counters again now that targets changed.
+  Counters.init();
+}
+
 async function detectAndRender({ useGPS = false, silent = false } = {}) {
   if (!silent) Loader.show(useGPS ? 'Requesting location permission…' : 'Loading…');
   try {
-    const [loc, mp, mla, funds, projects, schemes, complaints] = await Promise.all([
-      API.getLocation({ useGPS }),
-      API.getMP(),
-      API.getMLA(),
-      API.getFunds(),
-      API.getProjects(),
+    const loc = await API.getLocation({ useGPS });
+
+    // Fire all secondary requests in parallel.
+    const [reps, schemes, complaints, demoProjects] = await Promise.all([
+      API.getRepresentatives({ loc }),
       API.getSchemes(),
       API.getComplaintPortals(),
+      API.getProjects(),
     ]);
 
-    // When using real GPS, shift demo project pins to sit around the user
-    // so distances and the spending map remain meaningful.
-    const localisedProjects = useGPS ? relocateProjects(projects, loc.coords) : projects;
-
+    // Render the location + reps + static catalogues right away so the user
+    // sees something while the (slower) Overpass request resolves.
     renderLocation(loc);
-    renderReps([mp, mla]);
+    renderReps(reps);
     renderSchemes(schemes);
     renderComplaints(complaints);
-    Projects.init(localisedProjects);
-    SpendingMap.init(loc, localisedProjects);
+
+    // Project / map data: try real OSM assets first; fall back to the demo
+    // catalogue if Overpass is slow, blocked or returns nothing.
+    let projectsForUI = relocateProjects(demoProjects, loc.coords);
+    let funds = MOCK.funds;
+    let live = false;
+
+    if (useGPS) {
+      if (!silent) Loader.show('Fetching real public infrastructure from OpenStreetMap…');
+      try {
+        const assets = await API.getPublicAssets({ coords: loc.coords, radiusM: 3000 });
+        if (assets && assets.length >= 3) {
+          projectsForUI = assets;
+          funds = computeFunds(assets);
+          live = true;
+        } else if (!silent) {
+          Toast.show({
+            title: 'Few tagged assets here',
+            message: 'OpenStreetMap has limited coverage at this location — showing illustrative data.',
+            type: 'warning',
+          });
+        }
+      } catch (e) {
+        console.warn('Overpass failed', e);
+        if (!silent) Toast.show({ title: 'Live data unavailable', message: 'OpenStreetMap is busy — showing illustrative data.', type: 'warning' });
+      }
+    }
+
+    renderKPIs(funds, { live });
+    Projects.init(projectsForUI);
+    SpendingMap.init(loc, projectsForUI);
 
     if (!silent) {
       Toast.show({
-        title: useGPS ? 'Location detected' : 'Demo area loaded',
-        message: `${loc.address}${loc.state && loc.state !== 'Unavailable' ? ' · ' + loc.state : ''}`,
+        title: useGPS ? (live ? 'Live data loaded' : 'Location detected') : 'Demo area loaded',
+        message: `${loc.address}${loc.state && loc.state !== 'Unavailable' ? ' · ' + loc.state : ''}${live ? ` · ${projectsForUI.length} public assets` : ''}`,
         type: 'success',
       });
     }
   } catch (err) {
     console.error(err);
     if (useGPS) {
-      // GeolocationPositionError codes: 1=denied, 2=unavailable, 3=timeout
       const code = err && typeof err.code === 'number' ? err.code : 0;
       const message =
         code === 1 ? 'Permission denied. Showing demo area instead.' :
@@ -909,7 +1183,6 @@ async function detectAndRender({ useGPS = false, silent = false } = {}) {
         code === 3 ? 'Request timed out. Showing demo area instead.' :
                      'Could not get your location. Showing demo area instead.';
       Toast.show({ title: 'Using demo location', message, type: 'warning' });
-      // Fall back to demo so the page still works.
       Loader.hide();
       return detectAndRender({ useGPS: false, silent: true });
     }
