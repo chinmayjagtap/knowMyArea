@@ -93,16 +93,16 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
             Use My Location
           </button>
-          <button class="btn btn--ghost" id="exploreDemoBtn">
-            Explore Demo Area
+          <a class="btn btn--ghost" href="#money">
+            See what we measure
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
-          </button>
+          </a>
         </div>
 
-        <div class="hero__stats">
-          <div><strong data-counter data-target="84" data-prefix="₹" data-suffix=" Cr">₹0 Cr</strong><span>spent nearby</span></div>
-          <div><strong data-counter data-target="16">0</strong><span>projects tracked</span></div>
-          <div><strong data-counter data-target="82" data-suffix="/100">0/100</strong><span>transparency score</span></div>
+        <div class="hero__stats" id="heroStats" data-state="awaiting">
+          <div><strong id="heroStatAssets">—</strong><span>public assets nearby</span></div>
+          <div><strong id="heroStatHealth">—</strong><span>healthcare facilities</span></div>
+          <div><strong id="heroStatScore">—</strong><span>civic infra score</span></div>
         </div>
       </div>
     </div>
@@ -143,51 +143,53 @@
   </section>
 
   <!-- =========================================================
-       SECTION 4 · MONEY AROUND ME
+       SECTION 4 · CIVIC INFRASTRUCTURE AROUND YOU
+       All four KPIs are populated live from OpenStreetMap after
+       the user grants location permission.
   ========================================================= -->
   <section class="section" id="money">
     <div class="container">
       <header class="section__head">
-        <span class="eyebrow">The numbers</span>
-        <h2 class="section__title">Money around me</h2>
-        <p class="section__sub">Aggregated public spending within a 5 km radius of your detected location.</p>
+        <span class="eyebrow" id="kpiEyebrow">Step 3 · Live counts</span>
+        <h2 class="section__title" id="kpiTitle">Civic infrastructure around you</h2>
+        <p class="section__sub" id="kpiSub">Real public assets tagged in OpenStreetMap within 3 km of your detected location.</p>
       </header>
 
       <div class="kpi-grid">
         <article class="kpi">
           <div class="kpi__icon kpi__icon--blue">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12M6 8h12M9 13c5 0 5 8 0 8h-3M9 13l6 8"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M15 21V11a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v10"/></svg>
           </div>
-          <div class="kpi__value"><span data-counter data-target="84" data-prefix="₹" data-suffix=" Cr">₹0 Cr</span></div>
-          <div class="kpi__label">Public Spending Nearby</div>
-          <div class="kpi__trend up">▲ 12% vs last year</div>
+          <div class="kpi__value"><span data-counter data-target="0">—</span></div>
+          <div class="kpi__label">Public Assets Nearby</div>
+          <div class="kpi__trend" data-live-source>Awaiting location…</div>
         </article>
 
         <article class="kpi">
           <div class="kpi__icon kpi__icon--sky">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6"/></svg>
           </div>
-          <div class="kpi__value"><span data-counter data-target="12">0</span></div>
-          <div class="kpi__label">Ongoing Projects</div>
-          <div class="kpi__trend">In active execution</div>
+          <div class="kpi__value"><span data-counter data-target="0">—</span></div>
+          <div class="kpi__label">Schools &amp; Libraries</div>
+          <div class="kpi__trend" data-live-source>Awaiting location…</div>
         </article>
 
         <article class="kpi">
           <div class="kpi__icon kpi__icon--green">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14V6a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v8M3 14h18v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6zM10 8h4M12 6v4"/></svg>
           </div>
-          <div class="kpi__value"><span data-counter data-target="4">0</span></div>
-          <div class="kpi__label">Completed Projects</div>
-          <div class="kpi__trend up">▲ Delivered this FY</div>
+          <div class="kpi__value"><span data-counter data-target="0">—</span></div>
+          <div class="kpi__label">Healthcare Facilities</div>
+          <div class="kpi__trend" data-live-source>Awaiting location…</div>
         </article>
 
         <article class="kpi">
           <div class="kpi__icon kpi__icon--amber">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 22h18M5 22V10M19 22V10M9 22V10M15 22V10M2 10h20L12 3z"/></svg>
           </div>
-          <div class="kpi__value"><span data-counter data-target="78" data-suffix="%">0%</span></div>
-          <div class="kpi__label">Fund Utilization</div>
-          <div class="kpi__trend">Sanctioned vs spent</div>
+          <div class="kpi__value"><span data-counter data-target="0">—</span></div>
+          <div class="kpi__label">Govt Offices &amp; Utilities</div>
+          <div class="kpi__trend" data-live-source>Awaiting location…</div>
         </article>
       </div>
     </div>
@@ -200,8 +202,8 @@
     <div class="container">
       <header class="section__head">
         <span class="eyebrow">On the ground</span>
-        <h2 class="section__title">Projects near you</h2>
-        <p class="section__sub">Every project funded by your taxes, with budget, status, contractor and distance from you.</p>
+        <h2 class="section__title">Public assets near you</h2>
+        <p class="section__sub">Schools, hospitals, water works, police stations and govt offices within 3 km of you — fetched live from OpenStreetMap.</p>
       </header>
 
       <div class="toolbar">
@@ -222,7 +224,7 @@
       <div class="project-grid" id="projectGrid">
         <!-- Filled by JS -->
       </div>
-      <p class="empty-state" id="projectEmpty" hidden>No projects match your filters.</p>
+      <p class="empty-state" id="projectEmpty" hidden>No assets match your filters.</p>
     </div>
   </section>
 
@@ -267,21 +269,21 @@
     <div class="container">
       <header class="section__head">
         <span class="eyebrow">Visualise</span>
-        <h2 class="section__title">Interactive spending map</h2>
-        <p class="section__sub">Every marker is a real public project. Click one to see the budget, status, and contractor.</p>
+        <h2 class="section__title">Interactive map of public assets</h2>
+        <p class="section__sub">Every marker is a real public facility from OpenStreetMap. Tap one to see operator, distance and source.</p>
       </header>
 
       <div class="map-wrap">
-        <div id="leafletMap" class="map" aria-label="Interactive map of nearby government projects"></div>
+        <div id="leafletMap" class="map" aria-label="Interactive map of nearby public assets"></div>
         <aside class="map-legend glass">
           <h3>Legend</h3>
           <ul>
-            <li><span class="dot dot--success"></span> Completed</li>
+            <li><span class="dot dot--success"></span> Operational</li>
             <li><span class="dot dot--primary"></span> In Progress</li>
             <li><span class="dot dot--danger"></span> Delayed</li>
             <li><span class="dot dot--muted"></span> Planned</li>
           </ul>
-          <p class="map-legend__hint">Tap any marker for full project details.</p>
+          <p class="map-legend__hint">Tap any marker for full details.</p>
         </aside>
       </div>
     </div>
@@ -293,9 +295,9 @@
   <section class="section section--alt" id="score">
     <div class="container">
       <header class="section__head">
-        <span class="eyebrow">Accountability</span>
-        <h2 class="section__title">Constituency transparency score</h2>
-        <p class="section__sub">An open index combining delivery, disclosure and reach across your constituency.</p>
+        <span class="eyebrow">Live index</span>
+        <h2 class="section__title">Civic infrastructure score</h2>
+        <p class="section__sub">A live density-weighted index of public-asset diversity within 3 km of your location, computed from OpenStreetMap.</p>
       </header>
 
       <div class="score-wrap">
@@ -305,31 +307,31 @@
             <circle class="ring__fg" cx="80" cy="80" r="68" id="ringFg" />
           </svg>
           <div class="score-ring__center">
-            <div class="score-ring__value"><span data-counter data-target="82">0</span><small>/100</small></div>
+            <div class="score-ring__value"><span id="scoreValue">—</span><small>/100</small></div>
             <div class="score-ring__label">Overall Score</div>
-            <span class="badge badge--success">Above average</span>
+            <span class="badge badge--muted" id="scoreBadge">Awaiting location</span>
           </div>
         </div>
 
         <div class="score-breakdown glass">
           <h3>Score breakdown</h3>
-          <div class="bar" data-target="74">
-            <div class="bar__head"><span>Project Completion</span><b>74%</b></div>
+          <div class="bar" data-key="education" data-target="0">
+            <div class="bar__head"><span>Education access (schools &amp; libraries)</span><b>—</b></div>
             <div class="bar__track"><div class="bar__fill"></div></div>
           </div>
-          <div class="bar" data-target="78">
-            <div class="bar__head"><span>Fund Utilization</span><b>78%</b></div>
+          <div class="bar" data-key="healthcare" data-target="0">
+            <div class="bar__head"><span>Healthcare access (hospitals · clinics)</span><b>—</b></div>
             <div class="bar__track"><div class="bar__fill"></div></div>
           </div>
-          <div class="bar" data-target="88">
-            <div class="bar__head"><span>Public Data Availability</span><b>88%</b></div>
+          <div class="bar" data-key="governance" data-target="0">
+            <div class="bar__head"><span>Govt presence (offices · police · post)</span><b>—</b></div>
             <div class="bar__track"><div class="bar__fill"></div></div>
           </div>
-          <div class="bar" data-target="86">
-            <div class="bar__head"><span>Scheme Reach</span><b>86%</b></div>
+          <div class="bar" data-key="utilities" data-target="0">
+            <div class="bar__head"><span>Water &amp; safety infrastructure</span><b>—</b></div>
             <div class="bar__track"><div class="bar__fill"></div></div>
           </div>
-          <p class="score-note">Data updated quarterly from public disclosures. Methodology open-sourced.</p>
+          <p class="score-note" id="scoreNote">Click <b>Use My Location</b> above to compute your live score from real OpenStreetMap data.</p>
         </div>
       </div>
     </div>

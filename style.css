@@ -571,6 +571,24 @@ input, select, textarea { font: inherit; color: inherit; }
   font-size: 0.95rem;
 }
 
+.cta-empty {
+  text-align: center;
+  background: var(--card);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 56px 24px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+}
+.cta-empty__icon {
+  width: 56px; height: 56px; border-radius: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+.cta-empty__icon svg { width: 26px; height: 26px; }
+.cta-empty h3 { font-size: 1.2rem; font-weight: 700; }
+.cta-empty p { color: var(--muted); max-width: 460px; font-size: 0.95rem; }
+
 /* ---------- 12. Scheme cards ---------- */
 .scheme-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

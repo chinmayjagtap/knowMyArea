@@ -670,6 +670,16 @@ const Reveal = (() => {
 const renderLocation = (loc) => {
   const grid = $('#locationGrid');
   if (!grid) return;
+  if (!loc) {
+    grid.innerHTML = `
+      <div class="cta-empty" style="grid-column: 1 / -1;">
+        <div class="cta-empty__icon">${ICONS.pin}</div>
+        <h3>Allow location to identify your area</h3>
+        <p>We use the browser's Geolocation API and OpenStreetMap Nominatim to detect your ward, district, and state. Nothing is stored.</p>
+      </div>
+    `;
+    return;
+  }
   const items = [
     { label: 'Current Location', value: `${loc.address} · ${loc.pincode}`, icon: ICONS.pin, hero: true },
     { label: 'Ward', value: loc.ward, icon: ICONS.ward },
@@ -686,6 +696,19 @@ const renderLocation = (loc) => {
     </article>
   `).join('');
   Reveal.init();
+};
+
+/* ---- Representatives (empty state when no location) ---- */
+const renderRepsEmpty = () => {
+  const grid = $('#repGrid');
+  if (!grid) return;
+  grid.innerHTML = `
+    <div class="cta-empty" style="grid-column: 1 / -1;">
+      <div class="cta-empty__icon">${ICONS.parliament}</div>
+      <h3>Allow location to find your representatives</h3>
+      <p>Once we know your constituency we'll link directly to <b>sansad.in</b> and your state assembly portal so you can verify the current MP and MLA.</p>
+    </div>
+  `;
 };
 
 /* ---- Representatives ---- */
@@ -1005,9 +1028,10 @@ const SpendingMap = (() => {
 })();
 
 /* =========================================================
-   11. TRANSPARENCY SCORE · ring + bars
+   11. TRANSPARENCY SCORE · gradient setup only
+   (Live values are computed by computeLiveFunds + renderScore.)
 ========================================================= */
-const Score = (() => {
+const ScoreRing = (() => {
   const injectGradient = () => {
     const svg = $('.ring');
     if (!svg || $('#ringGrad')) return;
@@ -1024,152 +1048,279 @@ const Score = (() => {
     g.appendChild(s1); g.appendChild(s2); defs.appendChild(g);
     svg.insertBefore(defs, svg.firstChild);
   };
-
-  const animateRing = () => {
-    const ring = $('#ringFg');
-    if (!ring) return;
-    const score = 82;
-    const circumference = 2 * Math.PI * 68; // r=68 → ~427
-    requestAnimationFrame(() => {
-      ring.style.strokeDashoffset = circumference * (1 - score / 100);
-    });
-  };
-
-  const animateBars = () => {
-    $$('.bar').forEach(bar => {
-      const target = parseFloat(bar.dataset.target) || 0;
-      const fill = $('.bar__fill', bar);
-      requestAnimationFrame(() => { fill.style.width = target + '%'; });
-    });
-  };
-
-  const init = () => {
-    injectGradient();
-    const section = $('#score');
-    if (!section || !('IntersectionObserver' in window)) {
-      animateRing(); animateBars(); return;
-    }
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach(e => {
-        if (e.isIntersecting) {
-          animateRing();
-          animateBars();
-          io.disconnect();
-        }
-      });
-    }, { threshold: 0.3 });
-    io.observe(section);
-  };
-  return { init };
+  return { init: injectGradient };
 })();
 
 /* =========================================================
-   12. BOOT
+   12. BOOT & LIVE RENDERERS
 ========================================================= */
 
-// Update the KPI tiles. Accepts either demo funds OR computed-live funds.
-function renderKPIs(funds, { live = false } = {}) {
+// Update the 4 main KPI tiles from real OSM asset counts.
+// When `funds` is null we render an "awaiting location" state — no fake numbers.
+function renderKPIs(funds) {
   const tiles = $$('.kpi');
   if (!tiles.length) return;
 
-  const update = (idx, value, suffix = '', prefix = '', label, trend) => {
-    const tile = tiles[idx];
-    if (!tile) return;
+  const labels = ['Public Assets Nearby', 'Schools & Libraries', 'Healthcare Facilities', 'Govt Offices & Utilities'];
+  const trends = ['Live · OpenStreetMap', 'Within 3 km radius', 'Hospitals · clinics · pharmacies', 'Police · municipal · water'];
+
+  const values = funds
+    ? [funds.assetsNearby, funds.schools, funds.healthcare, funds.waterInfra + funds.infrastructure]
+    : [null, null, null, null];
+
+  tiles.forEach((tile, i) => {
     const span = $('[data-counter]', tile);
-    if (span) {
-      span.dataset.target = value;
-      span.dataset.prefix = prefix;
-      span.dataset.suffix = suffix;
+    const labelEl = $('.kpi__label', tile);
+    const trendEl = $('.kpi__trend', tile);
+    if (labelEl) labelEl.textContent = labels[i];
+    if (trendEl) trendEl.textContent = funds ? trends[i] : 'Awaiting location…';
+
+    if (!span) return;
+    if (values[i] == null) {
+      span.dataset.target = '0';
+      span.dataset.done = '1';
+      span.textContent = '—';
+    } else {
+      span.dataset.target = String(values[i]);
+      span.dataset.prefix = '';
+      span.dataset.suffix = '';
       span.dataset.done = '';
-      span.textContent = `${prefix}0${suffix}`;
+      span.textContent = '0';
     }
-    if (label) $('.kpi__label', tile).textContent = label;
-    if (trend) $('.kpi__trend', tile).textContent = trend;
+  });
+
+  if (funds) Counters.init();
+}
+
+// Update the hero stats (3 small numbers under the CTAs) live.
+function renderHeroStats(funds) {
+  const wrap = $('#heroStats');
+  const a = $('#heroStatAssets');
+  const h = $('#heroStatHealth');
+  const s = $('#heroStatScore');
+  if (!a || !h || !s) return;
+
+  if (!funds) {
+    wrap?.setAttribute('data-state', 'awaiting');
+    a.textContent = '—';
+    h.textContent = '—';
+    s.textContent = '—';
+    return;
+  }
+  wrap?.setAttribute('data-state', 'live');
+
+  const animate = (el, target, suffix = '') => {
+    const duration = 1200;
+    const start = performance.now();
+    const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+    const tick = (now) => {
+      const p = Math.min(1, (now - start) / duration);
+      const v = Math.round(target * easeOut(p));
+      el.textContent = v + suffix;
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
+  animate(a, funds.assetsNearby);
+  animate(h, funds.healthcare);
+  animate(s, funds.score, '/100');
+}
+
+// Update the transparency ring + breakdown bars from real OSM data.
+function renderScore(funds) {
+  const ringFg   = $('#ringFg');
+  const valueEl  = $('#scoreValue');
+  const badgeEl  = $('#scoreBadge');
+  const noteEl   = $('#scoreNote');
+  const bars     = $$('.bar');
+
+  // Reset breakdown bars to empty
+  bars.forEach(bar => {
+    const fill = $('.bar__fill', bar);
+    const lbl  = $('.bar__head b', bar);
+    if (fill) fill.style.width = '0%';
+    if (lbl)  lbl.textContent = funds ? '' : '—';
+  });
+
+  const circumference = 2 * Math.PI * 68; // ≈ 427
+
+  if (!funds) {
+    if (valueEl) valueEl.textContent = '—';
+    if (badgeEl) { badgeEl.textContent = 'Awaiting location'; badgeEl.className = 'badge badge--muted'; }
+    if (ringFg)  ringFg.style.strokeDashoffset = circumference;
+    if (noteEl)  noteEl.innerHTML = 'Click <b>Use My Location</b> above to compute your live score from real OpenStreetMap data.';
+    return;
+  }
+
+  // Animate ring
+  if (valueEl) {
+    const start = performance.now();
+    const animate = (now) => {
+      const p = Math.min(1, (now - start) / 1400);
+      const v = Math.round(funds.score * (1 - Math.pow(1 - p, 3)));
+      valueEl.textContent = v;
+      if (p < 1) requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  }
+  if (ringFg) {
+    requestAnimationFrame(() => {
+      ringFg.style.strokeDashoffset = circumference * (1 - funds.score / 100);
+    });
+  }
+  if (badgeEl) {
+    const tier = funds.score >= 75 ? { label: 'Excellent coverage', cls: 'badge--success' }
+              : funds.score >= 50 ? { label: 'Good coverage',      cls: 'badge--primary' }
+              : funds.score >= 25 ? { label: 'Limited coverage',   cls: 'badge--warning' }
+              :                     { label: 'Sparse coverage',    cls: 'badge--danger'  };
+    badgeEl.textContent = tier.label;
+    badgeEl.className = `badge ${tier.cls}`;
+  }
+  if (noteEl) {
+    noteEl.innerHTML = `Computed live from <b>${funds.assetsNearby}</b> OpenStreetMap public assets within 3 km. Higher scores indicate denser and more diverse civic infrastructure.`;
+  }
+
+  // Animate each breakdown bar to its real value.
+  const keys = {
+    education:  funds.breakdown.education,
+    healthcare: funds.breakdown.healthcare,
+    governance: funds.breakdown.governance,
+    utilities:  funds.breakdown.utilities,
+  };
+  bars.forEach(bar => {
+    const key = bar.dataset.key;
+    const val = keys[key] ?? 0;
+    const fill = $('.bar__fill', bar);
+    const lbl  = $('.bar__head b', bar);
+    if (lbl) lbl.textContent = `${val}%`;
+    if (fill) requestAnimationFrame(() => { fill.style.width = val + '%'; });
+  });
+}
+
+// Compute a live "civic infrastructure score" from real asset counts.
+// Score is a weighted, capped sum across 4 sub-indices, each saturating
+// at a sensible neighbourhood-level target.
+function computeLiveFunds(assets) {
+  const count = (cat) => assets.filter(a => a.category === cat).length;
+  const schools     = count('Schools');
+  const healthcare  = count('Healthcare');
+  const water       = count('Water');
+  const infra       = count('Infrastructure');
+
+  // Targets per 3 km: above this = 100%.
+  const TARGET = { education: 8, healthcare: 6, governance: 6, utilities: 4 };
+
+  const pct = (n, t) => Math.min(100, Math.round((n / t) * 100));
+
+  const breakdown = {
+    education:  pct(schools, TARGET.education),
+    healthcare: pct(healthcare, TARGET.healthcare),
+    governance: pct(infra, TARGET.governance),
+    utilities:  pct(water + Math.max(0, infra - TARGET.governance), TARGET.utilities),
   };
 
-  if (live) {
-    update(0, funds.assetsNearby, '', '', 'Public Assets Nearby', 'Live · OpenStreetMap');
-    update(1, funds.schools,      '', '', 'Schools & Libraries',  'Within 3 km radius');
-    update(2, funds.healthcare,   '', '', 'Healthcare Facilities','Hospitals · clinics · pharmacies');
-    update(3, funds.waterInfra + funds.infrastructure, '', '', 'Govt Offices & Utilities', 'Police · municipal · water');
-  } else {
-    update(0, funds.spending,    ' Cr', '₹', 'Public Spending Nearby', '▲ 12% vs last year');
-    update(1, funds.ongoing,     '',    '',  'Ongoing Projects',       'In active execution');
-    update(2, funds.completed,   '',    '',  'Completed Projects',     '▲ Delivered this FY');
-    update(3, funds.utilization, '%',   '',  'Fund Utilization',       'Sanctioned vs spent');
-  }
-  // Re-trigger counter animation for the new values.
-  $$('.kpi [data-counter]').forEach(el => {
-    el.dataset.done = '';
-  });
-  // Section eyebrow + title + sub
-  const head = $('#money .section__head');
-  if (head) {
-    head.querySelector('.eyebrow').textContent = live ? 'Live · within 3 km' : 'The numbers';
-    head.querySelector('.section__title').textContent = live ? 'Civic infrastructure around you' : 'Money around me';
-    head.querySelector('.section__sub').textContent = live
-      ? 'Real public assets tagged in OpenStreetMap within a 3 km radius of your detected location.'
-      : 'Aggregated public spending within a 5 km radius of your detected location.';
-  }
-  // Kick counters again now that targets changed.
-  Counters.init();
+  const score = Math.round(
+    breakdown.education  * 0.30 +
+    breakdown.healthcare * 0.30 +
+    breakdown.governance * 0.25 +
+    breakdown.utilities  * 0.15
+  );
+
+  return {
+    assetsNearby: assets.length,
+    schools, healthcare, waterInfra: water, infrastructure: infra,
+    score,
+    breakdown,
+  };
+}
+
+// Replace the project grid with a "needs location" empty state.
+function renderProjectsEmpty() {
+  const grid = $('#projectGrid');
+  if (!grid) return;
+  grid.innerHTML = `
+    <div class="cta-empty" style="grid-column: 1 / -1;">
+      <div class="cta-empty__icon">${ICONS.pin}</div>
+      <h3>Allow location to see real public assets</h3>
+      <p>We use your coordinates to fetch every school, hospital, government office, water work and police station within 3 km — live from OpenStreetMap. Nothing is stored.</p>
+      <button class="btn btn--primary btn--sm" id="emptyUseLocation">${ICONS.pin} Use My Location</button>
+    </div>
+  `;
+  $('#emptyUseLocation')?.addEventListener('click', () => $('#useLocationBtn')?.click());
+}
+
+// Show a placeholder inside the map until live data arrives.
+function renderMapEmpty() {
+  const el = $('#leafletMap');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="cta-empty" style="margin: 0; height: 100%; border: 0; border-radius: 0; background: var(--bg-alt);">
+      <div class="cta-empty__icon">${ICONS.pin}</div>
+      <h3>Map awaiting your location</h3>
+      <p>Grant location permission to plot real public assets around you.</p>
+    </div>
+  `;
 }
 
 async function detectAndRender({ useGPS = false, silent = false } = {}) {
   if (!silent) Loader.show(useGPS ? 'Requesting location permission…' : 'Loading…');
   try {
-    const loc = await API.getLocation({ useGPS });
-
-    // Fire all secondary requests in parallel.
-    const [reps, schemes, complaints, demoProjects] = await Promise.all([
-      API.getRepresentatives({ loc }),
+    // Static catalogues (schemes + complaint portals are real govt URLs).
+    const [schemes, complaints] = await Promise.all([
       API.getSchemes(),
       API.getComplaintPortals(),
-      API.getProjects(),
     ]);
-
-    // Render the location + reps + static catalogues right away so the user
-    // sees something while the (slower) Overpass request resolves.
-    renderLocation(loc);
-    renderReps(reps);
     renderSchemes(schemes);
     renderComplaints(complaints);
 
-    // Project / map data: try real OSM assets first; fall back to the demo
-    // catalogue if Overpass is slow, blocked or returns nothing.
-    let projectsForUI = relocateProjects(demoProjects, loc.coords);
-    let funds = MOCK.funds;
-    let live = false;
-
-    if (useGPS) {
-      if (!silent) Loader.show('Fetching real public infrastructure from OpenStreetMap…');
-      try {
-        const assets = await API.getPublicAssets({ coords: loc.coords, radiusM: 3000 });
-        if (assets && assets.length >= 3) {
-          projectsForUI = assets;
-          funds = computeFunds(assets);
-          live = true;
-        } else if (!silent) {
-          Toast.show({
-            title: 'Few tagged assets here',
-            message: 'OpenStreetMap has limited coverage at this location — showing illustrative data.',
-            type: 'warning',
-          });
-        }
-      } catch (e) {
-        console.warn('Overpass failed', e);
-        if (!silent) Toast.show({ title: 'Live data unavailable', message: 'OpenStreetMap is busy — showing illustrative data.', type: 'warning' });
-      }
+    if (!useGPS) {
+      // No GPS yet: honest empty states everywhere numbers would be fake.
+      renderLocation(null);
+      renderRepsEmpty();
+      renderKPIs(null);
+      renderHeroStats(null);
+      renderScore(null);
+      renderProjectsEmpty();
+      renderMapEmpty();
+      return;
     }
 
-    renderKPIs(funds, { live });
-    Projects.init(projectsForUI);
-    SpendingMap.init(loc, projectsForUI);
+    // GPS granted — real location → real assets.
+    const loc = await API.getLocation({ useGPS: true });
+    const reps = await API.getRepresentatives({ loc });
+    renderLocation(loc);
+    renderReps(reps);
+
+    if (!silent) Loader.show('Fetching real public infrastructure from OpenStreetMap…');
+    const assets = await API.getPublicAssets({ coords: loc.coords, radiusM: 3000 });
+
+    if (!assets || assets.length === 0) {
+      // No coverage in this area — show honest empty state, not fake data.
+      renderKPIs(null);
+      renderHeroStats(null);
+      renderScore(null);
+      renderProjectsEmpty();
+      renderMapEmpty();
+      Toast.show({
+        title: 'No tagged assets here',
+        message: 'OpenStreetMap has no public-facility data within 3 km of you yet.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const funds = computeLiveFunds(assets);
+
+    renderKPIs(funds);
+    renderHeroStats(funds);
+    renderScore(funds);
+    Projects.init(assets);
+    SpendingMap.init(loc, assets);
 
     if (!silent) {
       Toast.show({
-        title: useGPS ? (live ? 'Live data loaded' : 'Location detected') : 'Demo area loaded',
-        message: `${loc.address}${loc.state && loc.state !== 'Unavailable' ? ' · ' + loc.state : ''}${live ? ` · ${projectsForUI.length} public assets` : ''}`,
+        title: 'Live data loaded',
+        message: `${loc.address}${loc.state && loc.state !== 'Unavailable' ? ' · ' + loc.state : ''} · ${assets.length} public assets · score ${funds.score}/100`,
         type: 'success',
       });
     }
@@ -1178,13 +1329,13 @@ async function detectAndRender({ useGPS = false, silent = false } = {}) {
     if (useGPS) {
       const code = err && typeof err.code === 'number' ? err.code : 0;
       const message =
-        code === 1 ? 'Permission denied. Showing demo area instead.' :
-        code === 2 ? 'Location unavailable. Showing demo area instead.' :
-        code === 3 ? 'Request timed out. Showing demo area instead.' :
-                     'Could not get your location. Showing demo area instead.';
-      Toast.show({ title: 'Using demo location', message, type: 'warning' });
-      Loader.hide();
-      return detectAndRender({ useGPS: false, silent: true });
+        code === 1 ? 'Permission denied — we never store your location.' :
+        code === 2 ? 'Location unavailable. Try again with a better signal.' :
+        code === 3 ? 'Location request timed out. Try again.' :
+                     'Could not get your location. Try again.';
+      Toast.show({ title: 'Location not available', message, type: 'warning' });
+      // Keep honest empty state — no fake fallback.
+      return;
     }
     Toast.show({ title: 'Something went wrong', message: 'Please try again in a moment.', type: 'danger' });
   } finally {
@@ -1197,14 +1348,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   Theme.init();
   Nav.init();
-  Counters.init();
   Reveal.init();
-  Score.init();
+  ScoreRing.init();
 
-  // Initial silent render with demo data so the page is never empty.
+  // Render honest empty state immediately — page should never show fake numbers.
+  renderLocation(null);
+  renderRepsEmpty();
+  renderKPIs(null);
+  renderHeroStats(null);
+  renderScore(null);
+  renderProjectsEmpty();
+  renderMapEmpty();
+  // Static catalogues (schemes + complaint portals are real govt URLs).
   detectAndRender({ useGPS: false, silent: true });
 
-  // Hero CTAs
+  // Hero CTA — request real GPS and load live data.
   $('#useLocationBtn')?.addEventListener('click', async () => {
     if (!('geolocation' in navigator)) {
       Toast.show({ title: 'Not supported', message: 'Your browser does not support geolocation.', type: 'danger' });
@@ -1216,11 +1374,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     await detectAndRender({ useGPS: true, silent: false });
     document.getElementById('location')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-
-  $('#exploreDemoBtn')?.addEventListener('click', async () => {
-    await detectAndRender({ useGPS: false, silent: false });
-    document.getElementById('money')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 });
 
