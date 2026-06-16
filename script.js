@@ -660,12 +660,17 @@ const API = {
           : null,
       }));
     } else {
+      // Auto-detection failed (common for suburbs whose name differs from
+      // the assembly constituency, e.g. Kharadi → Vadgaon Sheri). Tell the
+      // user clearly and point them at the searchable list below.
+      const areaHint = [loc.raw?.suburb, loc.raw?.village, loc.raw?.neighbourhood, loc.district]
+        .filter(Boolean)[0] || 'your area';
       cards.push({
         role: 'Member of Legislative Assembly',
-        name: 'Find your MLA',
-        party: 'PRS India · MLA tracker',
-        constituency: loc.assembly,
-        term: `${loc.state} Assembly`,
+        name: 'Pick your MLA from the list below',
+        party: `Couldn’t auto-detect the assembly seat for ${areaHint}`,
+        constituency: `Open “All MLAs” below and search by your area or MLA name.`,
+        term: `${loc.state || ''} Assembly`,
         contact: '—',
         phone: '—',
         attendance: '—',
@@ -679,12 +684,15 @@ const API = {
     try { rsList = await MP_DATA.findRSMembers(loc); } catch (e) { /* ignore */ }
     for (const m of rsList) cards.push(memberToCard(m));
 
-    // ---- All other MLAs in the state (collapsed group) ----
+    // ---- All MLAs in the state (collapsed, searchable group) ----
+    // When we have a confident top match we de-dupe (already shown above).
+    // When match failed or was just a best-guess, keep the full roster so
+    // the user can find theirs via the search filter without confusion.
     let mlaList = [];
     try { mlaList = await MP_DATA.findMLAs(loc); } catch (e) { /* ignore */ }
-    const matchedMLAName = mlaMatch?.member?.['MLA Name'];
+    const dedupeName = mlaMatch?.confidence === 'confident' ? mlaMatch?.member?.['MLA Name'] : null;
     for (const m of mlaList) {
-      if (matchedMLAName && m['MLA Name'] === matchedMLAName) continue;  // already shown above
+      if (dedupeName && m['MLA Name'] === dedupeName) continue;
       cards.push(mlaToCard(m));
     }
 
@@ -1084,29 +1092,62 @@ const renderReps = (reps) => {
     `
     : '';
 
-  const mlaStateName = mlaExtra[0]?.constituency?.split(',').pop()?.trim() || '';
+  const mlaStateName = mlaExtra[0]?.constituency?.split(',').pop()?.trim()
+    || primary.find(r => r.type === 'MLA')?.term?.replace(/ Assembly$/i, '')
+    || '';
   const mlaGroupHTML = mlaExtra.length
     ? `
-      <details class="rep-rs-group reveal">
+      <details class="rep-rs-group reveal" id="mlaGroup" open>
         <summary>
           <span class="rep-rs-group__title">
-            <b>Other MLAs \u00b7 ${mlaExtra.length} member${mlaExtra.length > 1 ? 's' : ''}</b>
+            <b>All MLAs \u00b7 ${mlaExtra.length} member${mlaExtra.length > 1 ? 's' : ''}</b>
             ${mlaStateName ? `<span>from ${escapeHTML(mlaStateName)}</span>` : ''}
           </span>
           <span class="rep-rs-group__chip" aria-hidden="true"></span>
         </summary>
         <p class="rep-rs-group__note">
-          Every other MLA in your state assembly, sorted by constituency. Source: PRS India (CC-BY 4.0).
+          Search by your area (e.g. "Kharadi", "Wagholi"), constituency (e.g. "Vadgaon Sheri") or MLA name. Source: PRS India (CC-BY 4.0).
         </p>
-        <div class="rep-rs-grid">
+        <div class="rep-rs-filter">
+          <input type="search" id="mlaFilter" class="rep-rs-filter__input" placeholder="Filter MLAs by constituency, name or party\u2026" aria-label="Filter MLAs" autocomplete="off" />
+          <span class="rep-rs-filter__count" id="mlaFilterCount">${mlaExtra.length} of ${mlaExtra.length}</span>
+        </div>
+        <div class="rep-rs-grid" id="mlaGrid">
           ${mlaExtra.map(repCardHTML).join('')}
         </div>
+        <p class="rep-rs-group__empty" id="mlaEmpty" hidden>No MLAs match that search.</p>
       </details>
     `
     : '';
 
   grid.innerHTML = primary.map(repCardHTML).join('') + rsGroupHTML + mlaGroupHTML;
+  wireMLAFilter();
   Reveal.init();
+};
+
+// Live-filter the bulk MLA grid by constituency / name / party. Cheap
+// substring search across the rendered card's text content.
+const wireMLAFilter = () => {
+  const input = $('#mlaFilter');
+  const grid = $('#mlaGrid');
+  const count = $('#mlaFilterCount');
+  const empty = $('#mlaEmpty');
+  if (!input || !grid) return;
+  const cards = Array.from(grid.children);
+  const total = cards.length;
+  const haystacks = cards.map(c => (c.textContent || '').toLowerCase());
+  const apply = () => {
+    const q = input.value.trim().toLowerCase();
+    let shown = 0;
+    cards.forEach((card, i) => {
+      const match = !q || haystacks[i].includes(q);
+      card.hidden = !match;
+      if (match) shown++;
+    });
+    if (count) count.textContent = `${shown} of ${total}`;
+    if (empty) empty.hidden = shown !== 0;
+  };
+  input.addEventListener('input', apply);
 };
 
 /* ---- Schemes ---- */
