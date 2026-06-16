@@ -435,6 +435,70 @@ input, select, textarea { font: inherit; color: inherit; }
 .rep-card__meta b { font-weight: 600; font-size: 0.92rem; }
 .rep-card__actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* ---- Rich MP card variant (live data from RTI Wiki / sansad.in) ---- */
+.rep-card--rich .rep-card__head { align-items: flex-start; }
+.rep-card__photo {
+  width: 72px; height: 72px; border-radius: 20px;
+  object-fit: cover; object-position: top center;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.rep-card__heading { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rep-card__chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.rep-card__chip--ok {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+.rep-card__chip--warn {
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: #B45309;
+}
+.rep-card__rti {
+  border-top: 1px dashed var(--border);
+  padding-top: 14px;
+  font-size: 0.85rem;
+}
+.rep-card__rti summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--primary);
+  list-style: none;
+  user-select: none;
+}
+.rep-card__rti summary::-webkit-details-marker { display: none; }
+.rep-card__rti summary::before { content: '▸ '; transition: transform 200ms ease; display: inline-block; }
+.rep-card__rti[open] summary::before { content: '▾ '; }
+.rep-card__rti ul {
+  list-style: none; padding: 0; margin: 12px 0 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.rep-card__rti li {
+  padding: 10px 12px;
+  background: var(--bg-alt);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.rep-card__rti li b { font-size: 0.78rem; color: var(--primary); }
+.rep-card__rti li span { color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
+.rep-card__source {
+  font-size: 0.72rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+  font-style: italic;
+}
+
 /* ---------- 9. KPI cards ---------- */
 .kpi-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));

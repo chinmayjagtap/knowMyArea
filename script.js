@@ -125,6 +125,112 @@ const reverseGeocode = async (lat, lng) => {
   };
 };
 
+// ---- RTI Wiki · Lok Sabha MP directory (CORS-open static JSON) ----
+// Live snapshot of all 540 current Lok Sabha members, sourced upstream from
+// the official sansad.in NIC API and refreshed every few weeks by RTI Wiki.
+// We lazy-fetch this once after GPS is granted, then fuzzy-match the user's
+// state + district / city to a constituency. If we find exactly one match
+// we render a rich card; otherwise we fall back to a verify-link card so we
+// never lie about who their MP is.
+const MP_DATA = (() => {
+  const URL = 'https://righttoinformation.wiki/static/data/ls-mps.json';
+  let cache = null;
+  let inflight = null;
+
+  // Normalise text for fuzzy matching: lowercase, ASCII-fold, strip punctuation.
+  const norm = (s) => String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  // De-obfuscate emails like  foo[at]gmail[dot]com  →  foo@gmail.com
+  const cleanEmail = (s) => String(s || '').replace(/\[at\]/gi, '@').replace(/\[dot\]/gi, '.').split(',')[0].trim();
+
+  // Some Nominatim states need mapping to RTI-Wiki's spelling.
+  const STATE_ALIASES = {
+    'delhi': 'NCT of Delhi',
+    'national capital territory of delhi': 'NCT of Delhi',
+    'jammu and kashmir': 'Jammu and Kashmir',
+    'odisha': 'Odisha',
+    'orissa': 'Odisha',
+    'andaman and nicobar': 'Andaman and Nicobar Islands',
+    'dadra and nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu',
+    'daman and diu': 'Dadra and Nagar Haveli and Daman and Diu',
+  };
+  const canonState = (s) => STATE_ALIASES[norm(s)] || s;
+
+  const load = () => {
+    if (cache) return Promise.resolve(cache);
+    if (inflight) return inflight;
+    inflight = fetch(URL, { headers: { 'Accept': 'application/json' } })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(json => { cache = json; return json; })
+      .catch(err => { inflight = null; throw err; });
+    return inflight;
+  };
+
+  // Given a Nominatim `loc`, return { member, confidence } or null.
+  // confidence ∈ { 'confident' (1 match), 'best-guess' (>1 matches) }.
+  const findMP = async (loc) => {
+    if (!loc) return null;
+    let data;
+    try { data = await load(); } catch (e) { return null; }
+
+    const targetState = canonState(loc.state);
+    const inState = data.members.filter(m => m.state === targetState);
+    if (inState.length === 0) return null;
+
+    // Candidate place-names from Nominatim, in order of specificity.
+    const a = loc.raw || {};
+    const places = [a.city_district, a.city, a.town, a.municipality, a.county, a.state_district, loc.district, a.suburb, a.village]
+      .filter(Boolean)
+      .map(norm);
+    if (places.length === 0) return null;
+
+    // Score each MP: prefer exact-word matches over substring matches.
+    const scored = [];
+    for (const m of inState) {
+      const c = norm(m.constituency);
+      let score = 0;
+      for (const p of places) {
+        if (!p) continue;
+        if (c === p) score = Math.max(score, 100);
+        else if ((' ' + c + ' ').includes(' ' + p + ' ')) score = Math.max(score, 80);
+        else if (c.includes(p) || p.includes(c)) score = Math.max(score, 50);
+      }
+      if (score > 0) scored.push({ m, score });
+    }
+    if (scored.length === 0) return null;
+    scored.sort((x, y) => y.score - x.score);
+
+    const top = scored[0];
+    const ties = scored.filter(s => s.score === top.score);
+    return {
+      member: top.m,
+      confidence: ties.length === 1 ? 'confident' : 'best-guess',
+      ambiguous: ties.length > 1,
+    };
+  };
+
+  // Build action links to other transparency portals for a given MP.
+  // None of these sites expose per-MP deep links via a public API, so we use
+  // their official search URLs — the user lands on the right portal, one step
+  // away from the right record.
+  const linksFor = (m) => {
+    const q = encodeURIComponent(`${m.name} ${m.constituency}`);
+    return {
+      profile: `https://righttoinformation.wiki${m.permalink}`,
+      myneta:  `https://www.myneta.info/myneta_search/?q=${q}`,
+      prs:     `https://prsindia.org/mptrack`,
+      mplads:  `https://empoweredindian.in/mplads`,
+      sansad:  'https://sansad.in/ls/members',
+    };
+  };
+
+  return { findMP, linksFor, cleanEmail };
+})();
+
 // ---- OpenStreetMap Overpass API ----
 // Returns real public infrastructure (schools, hospitals, govt offices,
 // police stations, water works, etc.) within `radiusM` metres of (lat, lng).
@@ -258,12 +364,50 @@ const API = {
     }
   },
 
-  // India has no open API for current MP/MLA data. We build constituency-aware
-  // verification cards that link directly to the official directories so users
-  // can confirm the sitting representative on sansad.in / state assembly site.
+  // Fetches the user's MP from the live RTI Wiki snapshot (sourced from
+  // sansad.in / NIC) and pairs it with an MLA verify-card. India still has
+  // no open API for state assembly members, so MLAs stay as verify-links.
   async getRepresentatives({ loc }) {
-    return [
-      {
+    const cards = [];
+
+    // ---- MP card ----
+    let mpMatch = null;
+    try { mpMatch = await MP_DATA.findMP(loc); } catch (e) { /* network fail → verify card */ }
+
+    if (mpMatch && mpMatch.member) {
+      const m = mpMatch.member;
+      const off = m.official || {};
+      const links = MP_DATA.linksFor(m);
+      const partyLabel = m.party_full && m.party_full !== m.party ? `${m.party} · ${m.party_full}` : m.party;
+      const ageStr = off.age ? `${off.age} yrs` : '—';
+      const termsStr = off.no_of_terms ? `${off.no_of_terms} term${off.no_of_terms > 1 ? 's' : ''}` : '—';
+
+      cards.push({
+        role: 'Member of Parliament',
+        name: m.name,
+        party: partyLabel,
+        constituency: `${m.constituency}, ${m.state}`,
+        term: 'Current Lok Sabha',
+        contact: MP_DATA.cleanEmail(off.email),
+        phone: off.permanent_phone || off.delhi_phone || '—',
+        attendance: off.profession || '—',
+        type: 'MP',
+        photoUrl: off.photo_url ? `https://righttoinformation.wiki${off.photo_url}` : null,
+        extras: [
+          { label: 'Age', value: ageStr },
+          { label: 'Terms', value: termsStr },
+          { label: 'Qualification', value: off.qualification || '—' },
+          { label: 'Gender', value: m.gender || '—' },
+        ],
+        rtiTargets: m.rti_targets || [],
+        links,
+        confidence: mpMatch.confidence,
+        sourceNote: mpMatch.confidence === 'best-guess'
+          ? `Best match for ${loc.district || loc.state}. Verify on sansad.in.`
+          : null,
+      });
+    } else {
+      cards.push({
         role: 'Member of Parliament',
         name: 'Verify on sansad.in',
         party: 'Official MP directory',
@@ -274,20 +418,24 @@ const API = {
         attendance: '—',
         type: 'MP',
         verifyUrl: 'https://sansad.in/ls/members',
-      },
-      {
-        role: 'Member of Legislative Assembly',
-        name: 'Find your MLA',
-        party: 'Official state assembly portal',
-        constituency: loc.assembly,
-        term: `${loc.state} Assembly`,
-        contact: '—',
-        phone: '—',
-        attendance: '—',
-        type: 'MLA',
-        verifyUrl: `https://www.google.com/search?q=${encodeURIComponent(loc.state + ' legislative assembly MLA ' + (loc.raw?.suburb || loc.district || ''))}`,
-      },
-    ];
+      });
+    }
+
+    // ---- MLA card (still verify-only) ----
+    cards.push({
+      role: 'Member of Legislative Assembly',
+      name: 'Find your MLA',
+      party: 'Official state assembly portal',
+      constituency: loc.assembly,
+      term: `${loc.state} Assembly`,
+      contact: '—',
+      phone: '—',
+      attendance: '—',
+      type: 'MLA',
+      verifyUrl: `https://www.google.com/search?q=${encodeURIComponent(loc.state + ' legislative assembly MLA ' + (loc.raw?.suburb || loc.district || ''))}`,
+    });
+
+    return cards;
   },
 
   // REAL public infrastructure within `radiusM` of the user, via OSM Overpass.
@@ -543,30 +691,84 @@ const renderRepsEmpty = () => {
 const renderReps = (reps) => {
   const grid = $('#repGrid');
   if (!grid) return;
-  grid.innerHTML = reps.map(r => `
-    <article class="rep-card reveal">
-      <div class="rep-card__head">
-        <div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>
-        <div>
-          <div class="rep-card__role">${escapeHTML(r.role)}</div>
-          <div class="rep-card__name">${escapeHTML(r.name)}</div>
-          <div class="rep-card__party">${escapeHTML(r.party)}</div>
+  grid.innerHTML = reps.map(r => {
+    // Rich real-MP card (has photo + extras + RTI prompts + portal links).
+    if (r.extras && r.links) {
+      const avatar = r.photoUrl
+        ? `<img class="rep-card__photo" src="${escapeHTML(r.photoUrl)}" alt="${escapeHTML(r.name)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';" />
+           <div class="rep-card__avatar" style="display:none" aria-hidden="true">${initials(r.name)}</div>`
+        : `<div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>`;
+      const confBadge = r.confidence === 'best-guess'
+        ? `<span class="rep-card__chip rep-card__chip--warn" title="${escapeHTML(r.sourceNote || '')}">Best match · verify</span>`
+        : `<span class="rep-card__chip rep-card__chip--ok">Live · sansad.in</span>`;
+      const extrasHTML = r.extras.map(x => `
+        <div><span>${escapeHTML(x.label)}</span><b>${escapeHTML(x.value)}</b></div>
+      `).join('');
+      const contactRow = [
+        r.contact && r.contact !== '—' ? `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>` : '',
+        r.phone && r.phone !== '—' ? `<a class="btn btn--ghost btn--sm" href="tel:${String(r.phone).replace(/[^\d+]/g,'')}">${ICONS.phone} Call</a>` : '',
+      ].filter(Boolean).join('');
+      const rtiHTML = (r.rtiTargets && r.rtiTargets.length)
+        ? `<details class="rep-card__rti">
+             <summary>${r.rtiTargets.length} ready-to-file RTI subjects</summary>
+             <ul>${r.rtiTargets.slice(0, 3).map(t => `
+               <li><b>${escapeHTML(t.target)}</b><br/><span>${escapeHTML(t.subject)}</span></li>
+             `).join('')}</ul>
+           </details>`
+        : '';
+      return `
+        <article class="rep-card rep-card--rich reveal">
+          <div class="rep-card__head">
+            ${avatar}
+            <div class="rep-card__heading">
+              <div class="rep-card__role">${escapeHTML(r.role)} ${confBadge}</div>
+              <div class="rep-card__name">${escapeHTML(r.name)}</div>
+              <div class="rep-card__party">${escapeHTML(r.party)} · ${escapeHTML(r.constituency)}</div>
+            </div>
+          </div>
+          <div class="rep-card__meta">
+            ${extrasHTML}
+          </div>
+          ${rtiHTML}
+          <div class="rep-card__actions">
+            <a class="btn btn--primary btn--sm" href="${r.links.profile}" target="_blank" rel="noopener">${ICONS.external} Full profile</a>
+            <a class="btn btn--ghost btn--sm" href="${r.links.sansad}" target="_blank" rel="noopener">${ICONS.external} sansad.in</a>
+            <a class="btn btn--ghost btn--sm" href="${r.links.myneta}" target="_blank" rel="noopener">${ICONS.external} MyNeta</a>
+            <a class="btn btn--ghost btn--sm" href="${r.links.prs}" target="_blank" rel="noopener">${ICONS.external} PRS Track</a>
+            <a class="btn btn--ghost btn--sm" href="${r.links.mplads}" target="_blank" rel="noopener">${ICONS.external} MPLADS</a>
+            ${contactRow}
+          </div>
+          <div class="rep-card__source">Source: RTI Wiki · sansad.in (NIC). Verify before use.</div>
+        </article>
+      `;
+    }
+
+    // Verify-only card (current MLA fallback + MP when match fails).
+    return `
+      <article class="rep-card reveal">
+        <div class="rep-card__head">
+          <div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>
+          <div>
+            <div class="rep-card__role">${escapeHTML(r.role)}</div>
+            <div class="rep-card__name">${escapeHTML(r.name)}</div>
+            <div class="rep-card__party">${escapeHTML(r.party)}</div>
+          </div>
         </div>
-      </div>
-      <div class="rep-card__meta">
-        <div><span>Constituency</span><b>${escapeHTML(r.constituency)}</b></div>
-        <div><span>Term</span><b>${escapeHTML(r.term)}</b></div>
-        <div><span>Attendance</span><b>${escapeHTML(r.attendance)}</b></div>
-        <div><span>Phone</span><b>${escapeHTML(r.phone)}</b></div>
-      </div>
-      <div class="rep-card__actions">
-        ${r.verifyUrl
-          ? `<a class="btn btn--primary btn--sm" href="${r.verifyUrl}" target="_blank" rel="noopener">${ICONS.external} Verify current rep</a>`
-          : `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>
-             <a class="btn btn--ghost btn--sm" href="tel:${r.phone.replace(/\s+/g,'')}">${ICONS.phone} Call</a>`}
-      </div>
-    </article>
-  `).join('');
+        <div class="rep-card__meta">
+          <div><span>Constituency</span><b>${escapeHTML(r.constituency)}</b></div>
+          <div><span>Term</span><b>${escapeHTML(r.term)}</b></div>
+          <div><span>Attendance</span><b>${escapeHTML(r.attendance)}</b></div>
+          <div><span>Phone</span><b>${escapeHTML(r.phone)}</b></div>
+        </div>
+        <div class="rep-card__actions">
+          ${r.verifyUrl
+            ? `<a class="btn btn--primary btn--sm" href="${r.verifyUrl}" target="_blank" rel="noopener">${ICONS.external} Verify current rep</a>`
+            : `<a class="btn btn--ghost btn--sm" href="mailto:${encodeURIComponent(r.contact)}">${ICONS.mail} Email</a>
+               <a class="btn btn--ghost btn--sm" href="tel:${r.phone.replace(/\s+/g,'')}">${ICONS.phone} Call</a>`}
+        </div>
+      </article>
+    `;
+  }).join('');
   Reveal.init();
 };
 
