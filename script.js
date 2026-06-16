@@ -125,20 +125,23 @@ const reverseGeocode = async (lat, lng) => {
   };
 };
 
-// ---- Local MP directories (Lok Sabha + Rajya Sabha CSVs) ----
-// Open data published by RTI Wiki (CC-BY 4.0) and shipped with the static
-// site under /data/. Source pipeline (per RTI Wiki):
-//   • Lok Sabha   — sansad.in/api_ls/member (NIC)
-//   • Rajya Sabha — rsdoc.nic.in/MemberGetData/getmemberall (NIC)
-//   • Wikipedia REST for neutral bios + photos
-// We lazy-load both CSVs once, then:
-//   • findLSMember(loc) → fuzzy-match user's city/district to a constituency.
-//   • findRSMembers(loc) → list every Rajya Sabha member sitting from the user's state.
+// ---- Local representative directories (LS + RS + MLA CSVs) ----
+// Open data shipped with the static site under /data/:
+//   • Lok Sabha   — RTI Wiki (CC-BY 4.0), sourced from sansad.in / NIC.
+//   • Rajya Sabha — RTI Wiki (CC-BY 4.0), sourced from rsdoc.nic.in / NIC.
+//   • MLAs        — PRS India (CC-BY 4.0), scraped from prsindia.org/mlatrack.
+// All three load lazily. Helpers:
+//   • findLSMember(loc)  → fuzzy-match user's city/district to a constituency.
+//   • findRSMembers(loc) → every Rajya Sabha member sitting from the user's state.
+//   • findMLAMember(loc) → fuzzy-match user's place names to an MLA constituency.
+//   • findMLAs(loc)      → every MLA from the user's state (for the collapsed group).
 //   • findBySlug(house, slug) → resolve a `?house=&mp=` permalink.
 const MP_DATA = (() => {
-  const LS_URL = 'data/lok-sabha-members.csv';
-  const RS_URL = 'data/rajya-sabha-members.csv';
+  const LS_URL  = 'data/lok-sabha-members.csv';
+  const RS_URL  = 'data/rajya-sabha-members.csv';
+  const MLA_URL = 'data/mla-members.csv';
   const PHOTO_BASE = 'https://righttoinformation.wiki';
+  const MLA_PHOTO_BASE = 'https://prsindia.org/files/mlatrack';
   let cache = null;
   let inflight = null;
 
@@ -213,16 +216,38 @@ const MP_DATA = (() => {
   };
   const canonState = (s) => STATE_ALIASES[norm(s)] || s;
 
+  // MLAs live under a different state-name namespace (PRS uses bare names like
+  // 'Delhi', not 'NCT of Delhi'); also Telangana/JK use raw names. Map the
+  // Nominatim state → the spelling that appears in mla-members.csv.
+  const MLA_STATE_ALIASES = {
+    'nct of delhi': 'Delhi',
+    'national capital territory of delhi': 'Delhi',
+    'orissa': 'Odisha',
+  };
+  const canonMLAState = (s) => MLA_STATE_ALIASES[norm(s)] || s;
+
+  // PRS image URL: /files/mlatrack/<state lowercase, %20-encoded>/<term>/mla_images/<image>
+  const mlaPhotoUrl = (m) => {
+    const img = m.Images || m.image || m.Image;
+    if (!img || !m.State || !m.Term) return null;
+    const state = encodeURIComponent(String(m.State).toLowerCase());
+    const term  = encodeURIComponent(String(m.Term));
+    return `${MLA_PHOTO_BASE}/${state}/${term}/mla_images/${encodeURIComponent(img)}`;
+  };
+
   const load = () => {
     if (cache) return Promise.resolve(cache);
     if (inflight) return inflight;
+    const fetchText = (url) => fetch(url).then(r => r.ok ? r.text() : Promise.reject(new Error(url + ' ' + r.status)));
     inflight = Promise.all([
-      fetch(LS_URL).then(r => r.ok ? r.text() : Promise.reject(new Error('LS CSV ' + r.status))),
-      fetch(RS_URL).then(r => r.ok ? r.text() : Promise.reject(new Error('RS CSV ' + r.status))),
-    ]).then(([lsText, rsText]) => {
+      fetchText(LS_URL),
+      fetchText(RS_URL),
+      fetchText(MLA_URL).catch(() => ''),  // MLA CSV is optional
+    ]).then(([lsText, rsText, mlaText]) => {
       const ls = parseCSV(lsText).map(m => ({ ...m, _house: 'ls', _slug: slugFromPermalink(m.permalink) }));
       const rs = parseCSV(rsText).map(m => ({ ...m, _house: 'rs', _slug: slugFromPermalink(m.permalink) }));
-      cache = { ls, rs };
+      const mla = mlaText ? parseCSV(mlaText).map(m => ({ ...m, _house: 'mla' })) : [];
+      cache = { ls, rs, mla };
       return cache;
     }).catch(err => { inflight = null; throw err; });
     return inflight;
@@ -274,6 +299,53 @@ const MP_DATA = (() => {
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   };
 
+  // Fuzzy-match user's place names to an MLA constituency in their state.
+  // Returns { member, confidence } or null.
+  const findMLAMember = async (loc) => {
+    if (!loc) return null;
+    let data;
+    try { data = await load(); } catch (e) { return null; }
+    if (!data.mla.length) return null;
+
+    const targetState = norm(canonMLAState(loc.state));
+    const inState = data.mla.filter(m => norm(m.State) === targetState);
+    if (!inState.length) return null;
+
+    const a = loc.raw || {};
+    const places = [a.suburb, a.neighbourhood, a.village, a.city_district, a.quarter, a.town, a.city, a.municipality, a.county, a.state_district, loc.district]
+      .filter(Boolean).map(norm);
+    if (!places.length) return null;
+
+    const scored = [];
+    for (const m of inState) {
+      const c = norm(m.Constituency);
+      let score = 0;
+      for (const p of places) {
+        if (!p) continue;
+        if (c === p) score = Math.max(score, 100);
+        else if ((' ' + c + ' ').includes(' ' + p + ' ')) score = Math.max(score, 80);
+        else if (c.includes(p) || p.includes(c)) score = Math.max(score, 50);
+      }
+      if (score > 0) scored.push({ m, score });
+    }
+    if (!scored.length) return null;
+    scored.sort((x, y) => y.score - x.score);
+    const top = scored[0];
+    const ties = scored.filter(s => s.score === top.score);
+    return { member: top.m, confidence: ties.length === 1 ? 'confident' : 'best-guess' };
+  };
+
+  // Every MLA from the user's state, sorted by constituency.
+  const findMLAs = async (loc) => {
+    if (!loc) return [];
+    let data;
+    try { data = await load(); } catch (e) { return []; }
+    const targetState = norm(canonMLAState(loc.state));
+    return data.mla
+      .filter(m => norm(m.State) === targetState)
+      .sort((a, b) => String(a.Constituency || '').localeCompare(String(b.Constituency || '')));
+  };
+
   // Resolve a `?house=&mp=<slug>` permalink to a specific member.
   const findBySlug = async (house, slug) => {
     if (!house || !slug) return null;
@@ -301,11 +373,14 @@ const MP_DATA = (() => {
     load,
     findLSMember,
     findRSMembers,
+    findMLAMember,
+    findMLAs,
     findBySlug,
     linksFor,
     cleanEmail,
     cleanPhone,
     slugFromPermalink,
+    mlaPhotoUrl,
     PHOTO_BASE,
   };
 })();
@@ -356,6 +431,55 @@ const memberToCard = (m, opts = {}) => {
     house: m._house,
   };
 };
+
+// Convert a raw MLA CSV row (PRS India schema) into the card shape.
+const mlaToCard = (m, opts = {}) => {
+  // PRS schema has inconsistent column casing across states. Coalesce.
+  const gender = m['Gender '] || m.Gender || '—';
+  const startTerm = m['Start of term'] || m['Start of Term'] || '—';
+  const endTerm   = m['End of Term'] || '—';
+  const email     = m.Email || '';
+  const phone     = m.Contact || '';
+  const ageRaw    = m.Age || '';
+  // PRS sometimes stores a bad date like "1900-02-28" instead of an age. Filter that.
+  const ageStr = /^\d{1,3}$/.test(ageRaw) ? `${ageRaw} yrs` : '—';
+  const photoUrl = MP_DATA.mlaPhotoUrl(m);
+  const searchQ  = encodeURIComponent(`${m['MLA Name']} ${m.Constituency || ''}`);
+
+  return {
+    role: 'Member of Legislative Assembly',
+    name: m['MLA Name'] || '—',
+    party: m.Party || '—',
+    constituency: `${m.Constituency || '—'}, ${m.State || ''}`,
+    term: `${m.State || ''} Assembly · Term ${m.Term || '—'}`,
+    contact: cleanEmailField(email),
+    phone: phone || '—',
+    attendance: m.Education || '—',
+    type: 'MLA',
+    photoUrl,
+    extras: [
+      { label: 'Age',           value: ageStr },
+      { label: 'Term ends',     value: endTerm },
+      { label: 'Qualification', value: m.Education || '—' },
+      { label: 'Gender',        value: gender },
+    ],
+    rtiTargets: [],
+    links: {
+      profile: `https://prsindia.org/mlatrack?state=${encodeURIComponent(m.State || '')}`,
+      myneta:  `https://www.myneta.info/myneta_search/?q=${searchQ}`,
+      prs:     'https://prsindia.org/mlatrack',
+      mplads:  '',  // MPLADS is MP-only; MLAs have MLALADS but no central portal.
+      sansad:  '',  // MLAs aren't in sansad.in
+    },
+    confidence: opts.confidence || 'confident',
+    sourceNote: opts.sourceNote || null,
+    slug: '',
+    house: 'mla',
+  };
+};
+
+// MLA emails arrive in plain form usually, but be defensive.
+const cleanEmailField = (s) => (s || '').toString().split(',')[0].trim();
 
 // ---- OpenStreetMap Overpass API ----
 // Returns real public infrastructure (schools, hospitals, govt offices,
@@ -490,10 +614,11 @@ const API = {
     }
   },
 
-  // Fetches the user's MPs from the local CSV snapshots (sourced from
-  // sansad.in / NIC via RTI Wiki) and pairs them with an MLA verify-card.
-  // India still has no open API for state assembly members, so MLAs stay as
-  // verify-links.
+  // Fetches the user's representatives from the local CSV snapshots:
+  //   \u2022 1 Lok Sabha MP (fuzzy-matched to constituency)
+  //   \u2022 1 MLA (fuzzy-matched to constituency) \u2014 falls back to verify card
+  //   \u2022 Every Rajya Sabha MP from the state (collapsed in UI)
+  //   \u2022 Every other MLA from the state (collapsed in UI)
   async getRepresentatives({ loc }) {
     const cards = [];
 
@@ -523,24 +648,45 @@ const API = {
       });
     }
 
-    // ---- MLA card (still verify-only) ----
-    cards.push({
-      role: 'Member of Legislative Assembly',
-      name: 'Find your MLA',
-      party: 'Official state assembly portal',
-      constituency: loc.assembly,
-      term: `${loc.state} Assembly`,
-      contact: '—',
-      phone: '—',
-      attendance: '—',
-      type: 'MLA',
-      verifyUrl: `https://www.google.com/search?q=${encodeURIComponent(loc.state + ' legislative assembly MLA ' + (loc.raw?.suburb || loc.district || ''))}`,
-    });
+    // ---- MLA card (fuzzy constituency match against PRS data) ----
+    let mlaMatch = null;
+    try { mlaMatch = await MP_DATA.findMLAMember(loc); } catch (e) { /* ignore */ }
+
+    if (mlaMatch && mlaMatch.member) {
+      cards.push(mlaToCard(mlaMatch.member, {
+        confidence: mlaMatch.confidence,
+        sourceNote: mlaMatch.confidence === 'best-guess'
+          ? `Best match for ${loc.district || loc.state}. Verify on PRS India.`
+          : null,
+      }));
+    } else {
+      cards.push({
+        role: 'Member of Legislative Assembly',
+        name: 'Find your MLA',
+        party: 'PRS India · MLA tracker',
+        constituency: loc.assembly,
+        term: `${loc.state} Assembly`,
+        contact: '—',
+        phone: '—',
+        attendance: '—',
+        type: 'MLA',
+        verifyUrl: `https://prsindia.org/mlatrack?state=${encodeURIComponent(loc.state || '')}`,
+      });
+    }
 
     // ---- Rajya Sabha members (one card per sitting member from this state) ----
     let rsList = [];
     try { rsList = await MP_DATA.findRSMembers(loc); } catch (e) { /* ignore */ }
     for (const m of rsList) cards.push(memberToCard(m));
+
+    // ---- All other MLAs in the state (collapsed group) ----
+    let mlaList = [];
+    try { mlaList = await MP_DATA.findMLAs(loc); } catch (e) { /* ignore */ }
+    const matchedMLAName = mlaMatch?.member?.['MLA Name'];
+    for (const m of mlaList) {
+      if (matchedMLAName && m['MLA Name'] === matchedMLAName) continue;  // already shown above
+      cards.push(mlaToCard(m));
+    }
 
     return cards;
   },
@@ -811,9 +957,14 @@ const repCardHTML = (r) => {
       ? `<img class="rep-card__photo" src="${escapeHTML(r.photoUrl)}" alt="${escapeHTML(r.name)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';" />
          <div class="rep-card__avatar" style="display:none" aria-hidden="true">${initials(r.name)}</div>`
       : `<div class="rep-card__avatar" aria-hidden="true">${initials(r.name)}</div>`;
+    const isMLA = r.house === 'mla' || r.type === 'MLA';
+    const sourceLabel = isMLA ? 'Live · PRS India' : 'Live · sansad.in';
+    const sourceFooter = isMLA
+      ? 'Source: PRS India · prsindia.org/mlatrack (CC-BY 4.0). Verify before use.'
+      : 'Source: RTI Wiki · sansad.in (NIC). Verify before use.';
     const confBadge = r.confidence === 'best-guess'
       ? `<span class="rep-card__chip rep-card__chip--warn" title="${escapeHTML(r.sourceNote || '')}">Best match · verify</span>`
-      : `<span class="rep-card__chip rep-card__chip--ok">Live · sansad.in</span>`;
+      : `<span class="rep-card__chip rep-card__chip--ok">${escapeHTML(sourceLabel)}</span>`;
     const extrasHTML = r.extras.map(x => `
       <div><span>${escapeHTML(x.label)}</span><b>${escapeHTML(x.value)}</b></div>
     `).join('');
@@ -829,6 +980,14 @@ const repCardHTML = (r) => {
            `).join('')}</ul>
          </details>`
       : '';
+    const actionLinks = [
+      r.links.profile ? `<a class="btn btn--primary btn--sm" href="${r.links.profile}" target="_blank" rel="noopener">${ICONS.external} Full profile</a>` : '',
+      r.links.sansad  ? `<a class="btn btn--ghost btn--sm" href="${r.links.sansad}" target="_blank" rel="noopener">${ICONS.external} sansad.in</a>` : '',
+      r.links.myneta  ? `<a class="btn btn--ghost btn--sm" href="${r.links.myneta}" target="_blank" rel="noopener">${ICONS.external} MyNeta</a>` : '',
+      r.links.prs     ? `<a class="btn btn--ghost btn--sm" href="${r.links.prs}" target="_blank" rel="noopener">${ICONS.external} PRS Track</a>` : '',
+      r.links.mplads  ? `<a class="btn btn--ghost btn--sm" href="${r.links.mplads}" target="_blank" rel="noopener">${ICONS.external} MPLADS</a>` : '',
+      contactRow,
+    ].filter(Boolean).join('');
     return `
       <article class="rep-card rep-card--rich reveal">
         <div class="rep-card__head">
@@ -844,14 +1003,9 @@ const repCardHTML = (r) => {
         </div>
         ${rtiHTML}
         <div class="rep-card__actions">
-          <a class="btn btn--primary btn--sm" href="${r.links.profile}" target="_blank" rel="noopener">${ICONS.external} Full profile</a>
-          <a class="btn btn--ghost btn--sm" href="${r.links.sansad}" target="_blank" rel="noopener">${ICONS.external} sansad.in</a>
-          <a class="btn btn--ghost btn--sm" href="${r.links.myneta}" target="_blank" rel="noopener">${ICONS.external} MyNeta</a>
-          <a class="btn btn--ghost btn--sm" href="${r.links.prs}" target="_blank" rel="noopener">${ICONS.external} PRS Track</a>
-          <a class="btn btn--ghost btn--sm" href="${r.links.mplads}" target="_blank" rel="noopener">${ICONS.external} MPLADS</a>
-          ${contactRow}
+          ${actionLinks}
         </div>
-        <div class="rep-card__source">Source: RTI Wiki · sansad.in (NIC). Verify before use.</div>
+        <div class="rep-card__source">${escapeHTML(sourceFooter)}</div>
       </article>
     `;
   }
@@ -887,20 +1041,36 @@ const renderReps = (reps) => {
   const grid = $('#repGrid');
   if (!grid) return;
 
-  // Split: Lok Sabha + MLA show up front; Rajya Sabha members (one per state,
-  // can be 18+) collapse into a single expandable group so the page doesn't
-  // turn into a wall of cards.
-  const primary = reps.filter(r => r.type !== 'RS');
-  const rs      = reps.filter(r => r.type === 'RS');
+  // Layout strategy: show the most specific reps (Lok Sabha MP + the
+  // matched MLA) at the top, then collapse the bulky state-wide lists
+  // (all Rajya Sabha MPs, all other MLAs) into expandable groups so the
+  // page doesn't turn into a wall of cards.
+  //
+  // The first MLA card we encounter is the user's matched MLA (or the
+  // verify-only fallback) \u2014 keep it visible. Any subsequent MLA cards
+  // come from findMLAs() and go into the collapsed group.
+  const primary = [];
+  const rs = [];
+  const mlaExtra = [];
+  let seenPrimaryMLA = false;
+  for (const r of reps) {
+    if (r.type === 'RS') { rs.push(r); continue; }
+    if (r.type === 'MLA') {
+      if (!seenPrimaryMLA) { primary.push(r); seenPrimaryMLA = true; }
+      else mlaExtra.push(r);
+      continue;
+    }
+    primary.push(r);
+  }
 
-  const stateName = rs[0]?.constituency || '';
+  const rsStateName = rs[0]?.constituency || '';
   const rsGroupHTML = rs.length
     ? `
       <details class="rep-rs-group reveal">
         <summary>
           <span class="rep-rs-group__title">
-            <b>Rajya Sabha · ${rs.length} member${rs.length > 1 ? 's' : ''}</b>
-            ${stateName ? `<span>from ${escapeHTML(stateName)}</span>` : ''}
+            <b>Rajya Sabha \u00b7 ${rs.length} member${rs.length > 1 ? 's' : ''}</b>
+            ${rsStateName ? `<span>from ${escapeHTML(rsStateName)}</span>` : ''}
           </span>
           <span class="rep-rs-group__chip" aria-hidden="true"></span>
         </summary>
@@ -914,7 +1084,28 @@ const renderReps = (reps) => {
     `
     : '';
 
-  grid.innerHTML = primary.map(repCardHTML).join('') + rsGroupHTML;
+  const mlaStateName = mlaExtra[0]?.constituency?.split(',').pop()?.trim() || '';
+  const mlaGroupHTML = mlaExtra.length
+    ? `
+      <details class="rep-rs-group reveal">
+        <summary>
+          <span class="rep-rs-group__title">
+            <b>Other MLAs \u00b7 ${mlaExtra.length} member${mlaExtra.length > 1 ? 's' : ''}</b>
+            ${mlaStateName ? `<span>from ${escapeHTML(mlaStateName)}</span>` : ''}
+          </span>
+          <span class="rep-rs-group__chip" aria-hidden="true"></span>
+        </summary>
+        <p class="rep-rs-group__note">
+          Every other MLA in your state assembly, sorted by constituency. Source: PRS India (CC-BY 4.0).
+        </p>
+        <div class="rep-rs-grid">
+          ${mlaExtra.map(repCardHTML).join('')}
+        </div>
+      </details>
+    `
+    : '';
+
+  grid.innerHTML = primary.map(repCardHTML).join('') + rsGroupHTML + mlaGroupHTML;
   Reveal.init();
 };
 
