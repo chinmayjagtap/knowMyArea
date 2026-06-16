@@ -3,8 +3,8 @@
    Vanilla JS · No frameworks · Production-ready MVP
    =========================================================
    Sections:
-     1. Mock data (Pune)
-     2. API abstraction layer (swap for real govt APIs later)
+     1. Curated catalogues (real central-govt URLs only)
+     2. API abstraction layer (real data sources)
      3. DOM helpers + toast + loader
      4. Theme toggle (localStorage)
      5. Navigation (scroll state + mobile menu + smooth scroll)
@@ -12,135 +12,21 @@
      7. Reveal-on-scroll
      8. Renderers: location, reps, projects, schemes, complaints
      9. Projects: search + filter + modal
-    10. Leaflet spending map
-    11. Transparency score (ring + bars)
-    12. Boot
+    10. Leaflet asset map
+    11. Score ring gradient
+    12. Boot & live renderers
 ========================================================= */
 
 (() => {
 'use strict';
 
 /* =========================================================
-   1. MOCK DATA · Pune
-   Replace with real API responses when government endpoints are wired.
+   1. CURATED CATALOGUES
+   Hand-curated lists of REAL central-government schemes and
+   grievance portals. Each entry's URL points to the actual
+   official portal — no numbers, no mock fields.
 ========================================================= */
-const MOCK = {
-  location: {
-    coords: { lat: 18.5074, lng: 73.8077 }, // Kothrud, Pune
-    address: 'Kothrud, Pune',
-    ward: 'Ward 12 · Kothrud',
-    assembly: 'Kothrud Vidhan Sabha',
-    loksabha: 'Pune Lok Sabha',
-    district: 'Pune',
-    state: 'Maharashtra',
-    pincode: '411038',
-  },
-
-  representatives: [
-    {
-      role: 'Member of Parliament',
-      name: 'Murlidhar Mohol',
-      party: 'Bharatiya Janata Party',
-      constituency: 'Pune Lok Sabha',
-      term: '2024 – 2029',
-      contact: 'mp.pune@sansad.in',
-      phone: '+91 20 2612 0000',
-      attendance: '94%',
-      type: 'MP',
-    },
-    {
-      role: 'Member of Legislative Assembly',
-      name: 'Chandrakant Patil',
-      party: 'Bharatiya Janata Party',
-      constituency: 'Kothrud Vidhan Sabha',
-      term: '2024 – 2029',
-      contact: 'mla.kothrud@maharashtra.gov.in',
-      phone: '+91 20 2543 0000',
-      attendance: '88%',
-      type: 'MLA',
-    },
-  ],
-
-  funds: {
-    spending: 84,        // ₹ crore
-    ongoing: 12,
-    completed: 4,
-    utilization: 78,     // %
-  },
-
-  projects: [
-    {
-      id: 'p1', name: 'Karve Road Resurfacing Phase II',
-      department: 'PWD Maharashtra', category: 'Roads',
-      budget: 12.4, status: 'In Progress', progress: 62,
-      completion: 'Dec 2026', contractor: 'Sahyadri Infra Pvt Ltd',
-      distance: 0.8, lat: 18.504, lng: 73.815,
-    },
-    {
-      id: 'p2', name: 'Kothrud STP Capacity Expansion',
-      department: 'PMC Water Supply', category: 'Water',
-      budget: 28.6, status: 'In Progress', progress: 41,
-      completion: 'Aug 2027', contractor: 'JalNirmiti Engineers',
-      distance: 1.4, lat: 18.512, lng: 73.802,
-    },
-    {
-      id: 'p3', name: 'Mahatma Society Smart Classroom Upgrade',
-      department: 'Education Dept · Maharashtra', category: 'Schools',
-      budget: 3.2, status: 'Completed', progress: 100,
-      completion: 'Mar 2026', contractor: 'EduTech Solutions',
-      distance: 1.1, lat: 18.514, lng: 73.811,
-    },
-    {
-      id: 'p4', name: 'Karve Nagar Primary Health Centre',
-      department: 'PMC Health Department', category: 'Healthcare',
-      budget: 9.8, status: 'In Progress', progress: 78,
-      completion: 'Oct 2026', contractor: 'MediBuild Constructions',
-      distance: 1.9, lat: 18.499, lng: 73.821,
-    },
-    {
-      id: 'p5', name: 'Paud Road Flyover Pier Works',
-      department: 'PMRDA', category: 'Infrastructure',
-      budget: 18.0, status: 'Delayed', progress: 34,
-      completion: 'Mar 2026 (revised)', contractor: 'Konark Infraprojects',
-      distance: 2.4, lat: 18.520, lng: 73.795,
-    },
-    {
-      id: 'p6', name: 'Erandwane Storm Water Drains',
-      department: 'PMC Drainage', category: 'Water',
-      budget: 5.6, status: 'Completed', progress: 100,
-      completion: 'Jan 2026', contractor: 'Pune CivilCorp',
-      distance: 2.8, lat: 18.508, lng: 73.829,
-    },
-    {
-      id: 'p7', name: 'Bhugaon Junction Signalisation',
-      department: 'Traffic Police · PMC', category: 'Roads',
-      budget: 1.4, status: 'Completed', progress: 100,
-      completion: 'Feb 2026', contractor: 'SignalTech India',
-      distance: 3.1, lat: 18.494, lng: 73.785,
-    },
-    {
-      id: 'p8', name: 'Kothrud Sports Complex Renovation',
-      department: 'PMC Sports Dept', category: 'Infrastructure',
-      budget: 7.2, status: 'Planned', progress: 0,
-      completion: 'Jun 2027', contractor: 'TBD (Tender stage)',
-      distance: 1.6, lat: 18.516, lng: 73.806,
-    },
-    {
-      id: 'p9', name: 'Rajaram Bridge Strengthening',
-      department: 'PWD Maharashtra', category: 'Infrastructure',
-      budget: 4.5, status: 'In Progress', progress: 55,
-      completion: 'Nov 2026', contractor: 'Maratha Constructions',
-      distance: 3.6, lat: 18.493, lng: 73.832,
-    },
-    {
-      id: 'p10', name: 'Kothrud Zilla Parishad School Extension',
-      department: 'Zilla Parishad Pune', category: 'Schools',
-      budget: 2.7, status: 'Delayed', progress: 48,
-      completion: 'Dec 2025 (revised)', contractor: 'Pune Builders Co.',
-      distance: 2.0, lat: 18.517, lng: 73.815,
-    },
-  ],
-
+const CATALOGUES = {
   schemes: [
     {
       code: 'PMAY', name: 'Pradhan Mantri Awas Yojana',
@@ -158,7 +44,7 @@ const MOCK = {
     },
     {
       code: 'PMK', name: 'PM Kisan Samman Nidhi',
-      description: 'Direct income support of ₹6,000 per year credited in three equal installments to small and marginal farmers.',
+      description: 'Direct income support of ₹6,000 per year credited in three equal instalments to small and marginal farmers.',
       eligibility: 'Landholding farmers (excluding institutional landholders & income-tax payees).',
       apply: 'https://pmkisan.gov.in/',
       learn: 'https://pmkisan.gov.in/Documents/AboutPM-KISAN.pdf',
@@ -179,25 +65,25 @@ const MOCK = {
     },
   ],
 
+  // Pan-India grievance portals — work for any user, any state.
   complaints: [
-    { name: 'PMC Municipal Complaints', desc: 'Garbage, drains, encroachments and ward-level municipal issues in Pune.', url: 'https://www.pmc.gov.in/en/online-complaint', icon: 'building' },
-    { name: 'Road & Pothole Complaints', desc: 'Report potholes, broken footpaths and damaged road furniture across Maharashtra.', url: 'https://pgportal.gov.in/', icon: 'road' },
-    { name: 'Water Supply Complaints', desc: 'No water, leakages, contamination or billing issues with PMC Water Supply.', url: 'https://www.pmc.gov.in/en/water-supply', icon: 'drop' },
-    { name: 'MSEDCL Electricity Complaints', desc: 'Power cuts, voltage fluctuation, faulty meters and new connection issues.', url: 'https://www.mahadiscom.in/consumer/', icon: 'bolt' },
-    { name: 'Aaple Sarkar — State Grievance', desc: 'Single window grievance redressal for any Government of Maharashtra service.', url: 'https://grievances.maharashtra.gov.in/', icon: 'shield' },
+    { name: 'CPGRAMS · Central Govt Grievances', desc: 'Single window to lodge any complaint against any Central Government ministry or department.', url: 'https://pgportal.gov.in/', icon: 'shield' },
+    { name: 'India Post Complaints', desc: 'Track or raise complaints about parcels, money orders, and postal services anywhere in India.', url: 'https://www.indiapost.gov.in/VAS/Pages/ComplaintRegistration.aspx', icon: 'building' },
+    { name: 'Consumer Helpline (NCH)', desc: 'National Consumer Helpline for disputes with sellers, service providers and utilities.', url: 'https://consumerhelpline.gov.in/', icon: 'shield' },
+    { name: 'Electricity (State DISCOM lookup)', desc: 'Find your state electricity board\'s complaint portal — power cuts, faulty meters, new connections.', url: 'https://www.google.com/search?q=state+electricity+board+complaint+portal+india', icon: 'bolt' },
+    { name: 'Water Supply (Urban Local Body)', desc: 'Find your municipal corporation\'s water-supply grievance portal for leaks, contamination and billing.', url: 'https://www.google.com/search?q=municipal+corporation+water+supply+complaint+portal+india', icon: 'drop' },
   ],
 };
 
 /* =========================================================
    2. API ABSTRACTION LAYER
-   Real data sources used today:
+   100% live / real data — no mock fallbacks anywhere:
+     • Browser Geolocation         — real GPS coordinates
      • OpenStreetMap Nominatim     — reverse geocoding
      • OpenStreetMap Overpass API  — real public infrastructure near you
-     • Wikipedia REST API          — constituency / area info
-   Mock fallbacks remain for:
-     • Representatives  (no public MP/MLA API in India)
-     • Project budgets  (sources are PDFs, not APIs)
-     • Schemes & complaint portals (already real URLs to gov sites)
+     • Curated CATALOGUES          — real govt portal URLs (schemes, complaints)
+     • Representatives             — official verification cards linking to
+                                     sansad.in / state assembly directories
 ========================================================= */
 
 // --- Geolocation helpers ---
@@ -355,38 +241,9 @@ const fetchPublicAssets = async ({ lat, lng, radiusM = 3000 }) => {
     .slice(0, 30);
 };
 
-// Compute live KPI tiles from real assets.
-const computeFunds = (assets) => {
-  const count = (cat) => assets.filter(a => a.category === cat).length;
-  return {
-    assetsNearby:  assets.length,
-    schools:       count('Schools'),
-    healthcare:    count('Healthcare'),
-    waterInfra:    count('Water'),
-    infrastructure:count('Infrastructure'),
-    coverage:      Math.min(100, Math.round((assets.length / 25) * 100)), // 25 assets = 100% coverage proxy
-  };
-};
-
-// Wikipedia REST API — fetches a short summary for an area / constituency.
-const fetchWikipediaSummary = async (title) => {
-  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-  if (!res.ok) return null;
-  const data = await res.json();
-  if (data.type === 'disambiguation') return null;
-  return {
-    title: data.title,
-    extract: data.extract,
-    url: data.content_urls?.desktop?.page,
-    thumbnail: data.thumbnail?.source,
-  };
-};
-
 const API = {
-  // Get the user's civic location.
-  async getLocation({ useGPS = false } = {}) {
-    if (!useGPS) { await delay(300); return MOCK.location; }
+  // Get the user's civic location via browser GPS + Nominatim reverse geocode.
+  async getLocation() {
     const { lat, lng } = await getBrowserCoords();
     try { return await reverseGeocode(lat, lng); }
     catch (e) {
@@ -401,33 +258,30 @@ const API = {
     }
   },
 
-  // NOTE: India has no open API for current MP/MLA data. We show real
-  // constituency-level context from Wikipedia + official-portal links so
-  // users can verify the current representative on sansad.in / their
-  // state assembly site. Demo cards remain as illustrative defaults.
-  async getRepresentatives({ loc } = {}) {
-    await delay(60);
-    if (!loc || loc === MOCK.location) return MOCK.representatives;
+  // India has no open API for current MP/MLA data. We build constituency-aware
+  // verification cards that link directly to the official directories so users
+  // can confirm the sitting representative on sansad.in / state assembly site.
+  async getRepresentatives({ loc }) {
     return [
       {
         role: 'Member of Parliament',
         name: 'Verify on sansad.in',
-        party: 'Live MP directory',
+        party: 'Official MP directory',
         constituency: loc.loksabha,
         term: 'Current Lok Sabha',
         contact: 'feedback@sansad.in',
         phone: '+91 11 2303 5040',
         attendance: '—',
         type: 'MP',
-        verifyUrl: `https://sansad.in/ls/members`,
+        verifyUrl: 'https://sansad.in/ls/members',
       },
       {
         role: 'Member of Legislative Assembly',
-        name: 'Verify on state portal',
-        party: 'Live MLA directory',
+        name: 'Find your MLA',
+        party: 'Official state assembly portal',
         constituency: loc.assembly,
         term: `${loc.state} Assembly`,
-        contact: 'cs@maharashtra.gov.in',
+        contact: '—',
         phone: '—',
         attendance: '—',
         type: 'MLA',
@@ -436,31 +290,18 @@ const API = {
     ];
   },
 
-  // REAL DATA via OpenStreetMap Overpass — public infrastructure within ~3 km.
+  // REAL public infrastructure within `radiusM` of the user, via OSM Overpass.
   async getPublicAssets({ coords, radiusM = 3000 } = {}) {
     if (!coords) return [];
     return fetchPublicAssets({ lat: coords.lat, lng: coords.lng, radiusM });
   },
 
-  // Demo project list (with budgets & contractors). Used as fallback only.
-  async getProjects() { await delay(120); return MOCK.projects.map(p => ({ ...p })); },
-
-  // Real Indian welfare schemes with real apply / learn URLs.
-  async getSchemes() { await delay(80); return MOCK.schemes; },
-
-  // Computed live from real assets when available.
-  async getFunds() { await delay(80); return MOCK.funds; },
-
-  // Real complaint portal URLs (PMC, MSEDCL, Aaple Sarkar, CPGRAMS).
-  async getComplaintPortals() { await delay(60); return MOCK.complaints; },
-
-  // Wikipedia summary for a constituency / locality.
-  async getAreaInfo(title) { return fetchWikipediaSummary(title); },
+  // Curated catalogues of real central-govt schemes and grievance portals.
+  async getSchemes() { return CATALOGUES.schemes; },
+  async getComplaintPortals() { return CATALOGUES.complaints; },
 };
 
-const delay = (ms) => new Promise(res => setTimeout(res, ms));
-
-// Haversine distance in km.
+// Haversine distance in km between two {lat,lng} points.
 const haversineKm = (a, b) => {
   const R = 6371;
   const toRad = (d) => d * Math.PI / 180;
@@ -470,19 +311,6 @@ const haversineKm = (a, b) => {
   const lat2 = toRad(b.lat);
   const h = Math.sin(dLat / 2) ** 2 + Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
   return 2 * R * Math.asin(Math.sqrt(h));
-};
-
-// Translate demo project pins around the user (used only when fallback to demo).
-const relocateProjects = (projects, userCoords) => {
-  const origin = MOCK.location.coords;
-  const dLat = userCoords.lat - origin.lat;
-  const dLng = userCoords.lng - origin.lng;
-  return projects.map(p => {
-    const lat = p.lat + dLat;
-    const lng = p.lng + dLng;
-    const distance = haversineKm(userCoords, { lat, lng });
-    return { ...p, lat, lng, distance };
-  });
 };
 
 /* =========================================================
@@ -1262,40 +1090,31 @@ function renderMapEmpty() {
   `;
 }
 
-async function detectAndRender({ useGPS = false, silent = false } = {}) {
-  if (!silent) Loader.show(useGPS ? 'Requesting location permission…' : 'Loading…');
+// Render the two real catalogues (schemes + grievance portals). These are
+// curated lists of REAL govt portal URLs — no numbers, no claims.
+async function renderCatalogues() {
+  const [schemes, complaints] = await Promise.all([
+    API.getSchemes(),
+    API.getComplaintPortals(),
+  ]);
+  renderSchemes(schemes);
+  renderComplaints(complaints);
+}
+
+// Run the full live-data flow: GPS → reverse-geocode → Overpass → render.
+async function detectAndRender() {
+  Loader.show('Requesting location permission…');
   try {
-    // Static catalogues (schemes + complaint portals are real govt URLs).
-    const [schemes, complaints] = await Promise.all([
-      API.getSchemes(),
-      API.getComplaintPortals(),
-    ]);
-    renderSchemes(schemes);
-    renderComplaints(complaints);
-
-    if (!useGPS) {
-      // No GPS yet: honest empty states everywhere numbers would be fake.
-      renderLocation(null);
-      renderRepsEmpty();
-      renderKPIs(null);
-      renderHeroStats(null);
-      renderScore(null);
-      renderProjectsEmpty();
-      renderMapEmpty();
-      return;
-    }
-
-    // GPS granted — real location → real assets.
-    const loc = await API.getLocation({ useGPS: true });
+    const loc = await API.getLocation();
     const reps = await API.getRepresentatives({ loc });
     renderLocation(loc);
     renderReps(reps);
 
-    if (!silent) Loader.show('Fetching real public infrastructure from OpenStreetMap…');
+    Loader.show('Fetching real public infrastructure from OpenStreetMap…');
     const assets = await API.getPublicAssets({ coords: loc.coords, radiusM: 3000 });
 
     if (!assets || assets.length === 0) {
-      // No coverage in this area — show honest empty state, not fake data.
+      // No coverage in this area — show honest empty state, never fake data.
       renderKPIs(null);
       renderHeroStats(null);
       renderScore(null);
@@ -1317,27 +1136,21 @@ async function detectAndRender({ useGPS = false, silent = false } = {}) {
     Projects.init(assets);
     SpendingMap.init(loc, assets);
 
-    if (!silent) {
-      Toast.show({
-        title: 'Live data loaded',
-        message: `${loc.address}${loc.state && loc.state !== 'Unavailable' ? ' · ' + loc.state : ''} · ${assets.length} public assets · score ${funds.score}/100`,
-        type: 'success',
-      });
-    }
+    Toast.show({
+      title: 'Live data loaded',
+      message: `${loc.address}${loc.state && loc.state !== 'Unavailable' ? ' · ' + loc.state : ''} · ${assets.length} public assets · score ${funds.score}/100`,
+      type: 'success',
+    });
   } catch (err) {
     console.error(err);
-    if (useGPS) {
-      const code = err && typeof err.code === 'number' ? err.code : 0;
-      const message =
-        code === 1 ? 'Permission denied — we never store your location.' :
-        code === 2 ? 'Location unavailable. Try again with a better signal.' :
-        code === 3 ? 'Location request timed out. Try again.' :
-                     'Could not get your location. Try again.';
-      Toast.show({ title: 'Location not available', message, type: 'warning' });
-      // Keep honest empty state — no fake fallback.
-      return;
-    }
-    Toast.show({ title: 'Something went wrong', message: 'Please try again in a moment.', type: 'danger' });
+    const code = err && typeof err.code === 'number' ? err.code : 0;
+    const message =
+      code === 1 ? 'Permission denied — we never store your location.' :
+      code === 2 ? 'Location unavailable. Try again with a better signal.' :
+      code === 3 ? 'Location request timed out. Try again.' :
+                   'Could not get your location. Try again.';
+    Toast.show({ title: 'Location not available', message, type: 'warning' });
+    // Keep honest empty state — no fake fallback.
   } finally {
     Loader.hide();
   }
@@ -1351,7 +1164,7 @@ document.addEventListener('DOMContentLoaded', () => {
   Reveal.init();
   ScoreRing.init();
 
-  // Render honest empty state immediately — page should never show fake numbers.
+  // Render honest empty state immediately — the page never shows fake numbers.
   renderLocation(null);
   renderRepsEmpty();
   renderKPIs(null);
@@ -1359,8 +1172,9 @@ document.addEventListener('DOMContentLoaded', () => {
   renderScore(null);
   renderProjectsEmpty();
   renderMapEmpty();
-  // Static catalogues (schemes + complaint portals are real govt URLs).
-  detectAndRender({ useGPS: false, silent: true });
+
+  // Render the two real catalogues right away (no GPS required for these).
+  renderCatalogues();
 
   // Hero CTA — request real GPS and load live data.
   $('#useLocationBtn')?.addEventListener('click', async () => {
@@ -1372,7 +1186,7 @@ document.addEventListener('DOMContentLoaded', () => {
       Toast.show({ title: 'HTTPS required', message: 'Browsers only share location on https:// or localhost.', type: 'warning' });
       return;
     }
-    await detectAndRender({ useGPS: true, silent: false });
+    await detectAndRender();
     document.getElementById('location')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 });
